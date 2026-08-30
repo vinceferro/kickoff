@@ -1,0 +1,710 @@
+# lefthook.yml — local quality gates, no hosted CI required (claude-kickoff)
+#
+# The enforcement spine: the project's gate suite runs LOCALLY on every commit
+# and push, so a broken or unsafe change can't land in the first place. This is
+# the CI-less, self-served model — the box is the canonical environment.
+#
+# What ships ready-to-run: the two GENERIC, language-agnostic scanners
+# (scan-secrets, scan-structure). They work the moment the repo exists.
+#
+# What bootstrap/adopt FILL: the stack-specific gates (typecheck · lint · test).
+# kickoff is language-agnostic, so the gate machinery is a PATTERN; the agent
+# that scaffolds (bootstrap) or onboards (adopt) the repo knows the stack and
+# uncomments + fills the stanzas below for it (tsc/biome/vitest · cargo · ruff/
+# pytest · …). Until then the commented stanzas are inert and the scanners still run.
+#
+# Velocity-first (it must never be the thing that catches you):
+#   - pre-commit = CHEAP gates only (typecheck · lint · secret-scan) → fast loop
+#   - pre-push   = HEAVIER gates (full tests) + advisory structural scan
+#   - the adversarial `review` skill is sized to the diff (trivial → skip), run by
+#     the coordinator before a substantial commit — it is not a git hook.
+#
+# Install: `lefthook install` (bootstrap/adopt do this). Honest caveat: hooks are
+# bypassable with `--no-verify` — the agent honors them; a non-technical operator won't bypass.
+
+pre-commit:
+  parallel: true
+  commands:
+    # Identity: catch a private name or a machine path at the moment it is WRITTEN. Added lines
+    # only, so inherited content never re-fires — the release gate is the fail-closed backstop for
+    # the whole tree. Twice a release was held to scrub a name that had sat in a comment for weeks;
+    # by then a public tag cannot be unpublished. ALLOW_IDENTITY=1 is the sanctioned deliberate path.
+    identity-scan:
+      run: bash scripts/scan-identity.sh --staged
+    secret-scan:
+      run: bash scripts/scan-secrets.sh --staged
+      skip:
+        - merge
+        - rebase
+    # memory truth-invariant (cheap): a memory declaring `supersedes: <slug>` MUST have DELETED
+    # that slug's file — else a stale + a corrected memory both live on disk and a future session
+    # can retrieve the WRONG one. Exit 1 on a real contradiction or a malformed field; a pure
+    # no-op when nothing declares supersedes (the current live state). Blocks the commit.
+    memory-supersede:
+      run: bash scripts/memory-supersede-check.sh
+      skip:
+        - merge
+        - rebase
+    # memory budget (ADVISORY — `|| true` so it never blocks): the always-loaded MEMORY.md index
+    # is a per-session context tax; warn LOUD when it crosses the budget so it gets compacted, but
+    # never fail a commit over it (the index is a cache — compacting is the human's judgement call).
+    memory-budget:
+      run: bash scripts/memory-budget-check.sh || true
+      skip:
+        - merge
+        - rebase
+    # ─── stack gates — bootstrap/adopt uncomment + fill for the detected stack ───
+    # typecheck:
+    #   glob: "*.{ts,tsx}"          # (TS example) drop the glob for whole-project gates
+    #   run: <typecheck command, e.g.  npx tsc --noEmit  /  cargo check  /  mypy .>
+    # lint:
+    #   run: <lint command, e.g.  npx biome check .  /  cargo clippy -- -D warnings  /  ruff check .>
+
+pre-push:
+  parallel: true
+  commands:
+    structure-scan:
+      # Advisory: prints footgun findings for the `harden` skill to close; does not block.
+      run: bash scripts/scan-structure.sh
+      skip:
+        - merge
+        - rebase
+    # kickoff-itself's test suite for the brownfield-devex layer: the adopt-manifest keystone,
+    # the .kickoff/bin seam shims (§1.4), seam-sync on pull (§2.3), preflight #8 (Fix 9), and
+    # supervisor.log rotation. Pure bash + coreutils + python3 — no stack toolchain needed.
+    test:
+      run: bash scripts/adopt-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # eject (§2.4): the reverse of adopt — the `reverse` engine, the adopt→eject acceptance gate
+    # (byte-for-byte pristine), and the credential/destruction/no-clobber invariants. Same deps.
+    eject-test:
+      run: bash scripts/eject-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # pull (§7 step 4): `kickoff pull core-vNEXT` as a verifiable engine upgrade — the changelog
+    # delta, the whole-tree lock + dual-format preflight #6, the split-charter regen (Fix 5), the
+    # adopters registry + parked worktrees (Fix 7), and THE acceptance: the adopter's own layer
+    # (KICKOFF.local.md, CLAUDE.md, code) is byte-identical after a pull. Same deps (+ git).
+    pull-test:
+      run: bash scripts/pull-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # THE INTEGRATION PROOF (journey-e2e): the per-slice selftests above each prove ONE slice; this
+    # drives realistic brownfield + greenfield repos through the WHOLE journey against the REAL engine
+    # — adopt → the SIMULATED /adopt session (crew/tracker/memory/gates authored + RECORDED, the half a
+    # prior pass STUBBED into a false green) → run → serve → pull → eject — and asserts each stage COMPOSES,
+    # ending on the byte-for-byte zero-trace acceptance. Fully isolated (mktemp fixtures, scratch ports, a
+    # hermetic stub `claude`, a live-front-door canary) and fast (~8s), so it earns a spot on the gate.
+    journey-e2e:
+      run: bash scripts/journey-e2e.sh
+      skip:
+        - merge
+        - rebase
+    # adopt BRAINS (v0.26): adoption must land a MIND, not just plumbing. `kickoff adopt` wired gates, a
+    # pin, a bot and a worker and then handed the one step needing intelligence to a printed sentence
+    # telling a human to type `/adopt` — so six live adopters sat half-adopted, one through 35
+    # memory-writing sessions with zero .claude/agents/. The detector that should have caught it was
+    # predicated on "gates unwired", which adopt now always satisfies, so it was structurally dead for
+    # every modern adoption and reported GREEN. Listed HERE because release-gate.sh discovers suites ONLY
+    # from this block: an unlisted *-selftest.sh is invisible to the gate and skipped by manifest
+    # coverage, so it can rot red while the release reports "all suites GREEN". The detector lanes run
+    # with the gates WIRED on purpose — a fixture that strips them tests the OLD bug and goes green.
+    adopt-brains-test:
+      run: bash scripts/adopt-brains-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # incomplete-adopt detection (scout #1): the ABANDONED-but-ACTIVE shape is LOUDLY flagged (verify
+    # banner + preflight [warn]) while a LEGIT fresh adopt stays green AND bootable — the hard guard
+    # is "never a startup-breaking refusal" (preflight runs at every supervisor start). Same deps.
+    adopt-incomplete-test:
+      run: bash scripts/adopt-incomplete-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # `kickoff doctor` (core-v0.19 cluster 4): the idempotent REPAIR verb — back-fills an already-
+    # adopted repo's missing generic gates + memory index (the pulled-but-unrepaired adopter shape),
+    # records what it creates (eject-reversible), refuses a non-adopted dir, and never clobbers or
+    # re-records on a second run. Hermetic (mktemp fixtures + a scratch core, RED-first).
+    doctor-test:
+      run: bash scripts/doctor-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # board auto-serve (scout #4): `kickoff up` brings the Mission Control board up idempotently —
+    # free-port pick (ss pre-check), serve-status read FIRST (never clobber, never bare :443),
+    # recorded stable ports, fail-soft, --dry-run starts NOTHING, token never printed. Fully
+    # stubbed (tailscale/ss/curl/server are env-seam stubs) — no real tailscale is ever touched.
+    board-serve-test:
+      run: bash scripts/board-serve-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # §5 THE PLUGIN: engine-as-CC-plugin adopt/pull/eject — marketplace + machine-entry lifecycle, the
+    # plugin cache resync (verify-first · sibling-gate · settings.json byte-integrity), preflight #8's
+    # cache half. Fully isolated (scratch CLAUDE_CONFIG_DIR + a hermetic stub `claude`).
+    plugin-test:
+      run: bash scripts/plugin-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # reconcile (Phase-2 G9): `adopt --reconcile` generates a manifest for an ALREADY-adopted repo (the
+    # legacy-adopter migration path) — recording ONLY provably-kickoff artifacts, zero adopter writes; + the #8
+    # already-adopted recovery route. Same deps.
+    reconcile-test:
+      run: bash scripts/reconcile-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # The sweep mails OTHER orgs unprompted, so its three rules (only real findings, notify
+    # once, never yourself) are the difference between a useful nudge and noise in someone
+    # else's inbox. Deliberately NOT on a cadence — that is an operator's call. Hermetic:
+    # fake orphaned-work + agent-mail in a scratch dir, four mutants proven RED. Registered
+    # here because this file is the ONLY place release-gate discovers suites — an
+    # unregistered one rots red while the gate reports green.
+    orphan-sweep-test:
+      run: bash scripts/orphan-sweep-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # supervisor auth self-heal (staged, inert until armed): auth-heal.sh's detect/escalate/fail-safe
+    # logic — pure + hermetic (stubbed `claude`, no network, mktemp fixtures).
+    auth-heal-test:
+      run: bash scripts/auth-heal-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # telegram-channel reap-on-startup (v0.6 hardening): bridge-reap.sh's verify-before-kill
+    # ladder (FAIL TOWARD NOT KILLING) + the session-run.sh wiring — hermetic (/tmp fixtures,
+    # stub processes the test spawns and owns by exact pid; never touches a live bridge).
+    bridge-reap-test:
+      run: bash scripts/bridge-reap-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # session-run pty-wrap (v0.7 G1 §2.4): the wrap is decided by a REAL TTY test ([ -t 0 ]),
+    # never an inheritable env var (the leaked-_PTY_WRAPPED crash-loop of 2026-07-12), + the
+    # fail-loud loop guard when script(1) is broken/missing. Hermetic (mktemp fixtures, stub
+    # claude/tail, env -i scrubbed; RED-on-old proven against HEAD, auto-skip when identical).
+    ptywrap-test:
+      run: bash scripts/ptywrap-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # config precedence (v0.7 G1 §2.3): one rule at every seam — argv > pre-set env > instance.env
+    # > engine default; MODEL file-durable through a real `kickoff up` spawn chain; PERMISSION_MODE
+    # NEVER file-imported (a gitignored line can't arm autonomy); `--auto` grant-only (no effort=max).
+    # Hermetic (mktemp fixtures, stub claude/start-supervisor, env -i scrubbed; RED-on-old proven
+    # against HEAD, auto-skip when byte-identical).
+    config-precedence-test:
+      run: bash scripts/config-precedence-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # spawn hygiene (v0.7 G1 §2.5): the engine-owned positive KEEP-list at cmd_up's org-entry
+    # boundary — a caller session's _PTY_WRAPPED/TELEGRAM_STATE_DIR/MEMORY_*/… can never leak
+    # into a spawned org (the 07-12 crash-loop + channel-hijack class), KEEP-list vars + the
+    # KICKOFF_ENV_KEEP escape hatch survive. Hermetic (mktemp fixtures, stub claude with a
+    # baked-in probe, env -i controlled caller env; RED-on-old proven against HEAD, auto-skip
+    # when byte-identical).
+    spawn-hygiene-test:
+      run: bash scripts/spawn-hygiene-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # start surface (v0.7 G1 §2.2): `kickoff up` is the ONLY start surface — `--detach`
+    # (setsid/nohup + supervisor-log wiring + size rotate, go-autonomous's one real job
+    # engine-owned), `--replace` (exact verified lock pid, TERM → ≤35s wait → never
+    # KILL -9; foreign-cmdline pid → refuse, never signal), the pin-redirect (any kickoff
+    # binary hands off to the repo's PINNED engine, argv verbatim — the wrapper-killer),
+    # the go-autonomous deprecation shim, and the slice-3 hygiene boundary holding through
+    # --detach. Hermetic (mktemp fixtures, stub start-supervisor, exact-pid cleanup — no
+    # live supervisor ever touched; RED-on-old proven against HEAD, auto-skip when
+    # byte-identical).
+    start-surface-test:
+      run: bash scripts/start-surface-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # engine hop (v0.7 G1 slice 5): `kickoff pull` cycles the RUNNING worker — the supervisor's
+    # hop unit (pin watched every tick, hop only at a session boundary, exec = same PID so the
+    # lock + grant carry, preflight-red → hop-blocked flag + ONE alert, origin-inert for the
+    # dogfood repo) + acquire_lock's own-pid recognition. Hermetic (marker-extracted unit with a
+    # stubbed exec; ONE real fixture supervisor in a scratch REPO_DIR, exact-pid teardown;
+    # RED-on-old proven against HEAD, auto-skip when byte-identical).
+    hop-test:
+      run: bash scripts/hop-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # pin-redirect verify-before-exec: the redirect (up/adopt/doctor) gated on core.lock EXISTING,
+    # then exec'd whatever $KICKOFF_CORE_DIR named — never reading the commit the lock PINS. preflight
+    # #6 checks exactly this but runs INSIDE the engine, i.e. after the handover. The suite's
+    # load-bearing lane is RED-on-old: HEAD's front door really does exec a decoy engine, so a green
+    # here means the gate, not the wiring. Registered because an unlisted suite never runs.
+    pin-verify-test:
+      run: bash scripts/pin-verify-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # model-quota fallback (v0.8): the supervisor's REACTIVE model-fallback belt — detect the
+    # weekly model-limit string in the session's captured pty output, switch the worker to a
+    # cheaper fallback model (rewrite instance.env atomically + export to beat the fossilised
+    # MODEL + refresh), alert, and latch one-shot; the false-positive guard (same-line two-marker
+    # detection), the offset/rotation scan, the already-on-fallback + pricier-fallback + DRY_RUN
+    # + disarmed edges. Hermetic (marker-extracted unit, stubbed refresh/tg_send/log, a fixture
+    # supervisor.log with the REAL ANSI limit line + fixture instance.env; RED-on-old proven
+    # against HEAD, auto-skip when byte-identical).
+    model-fallback-test:
+      run: bash scripts/model-fallback-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # install (v0.5 G1): the one-command installer — `install.sh` clones + PINS the core at the latest
+    # STABLE core-v* tag (reusing `kickoff pull`), links ~/.local/bin/kickoff, prints the one-line PATH
+    # fix, and is idempotent. Fully hermetic (mktemp local remote + scratch $HOMEs, no network).
+    install-test:
+      run: bash scripts/install-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # release gate (v0.9 slice 1): scripts/release-gate.sh's plugin-version-vs-content invariant (LOCKED
+    # decision #1) — if ANY plugin/ file changed vs the prev tag, plugin.json's version MUST bump, else
+    # every adopter's `kickoff pull` fails closed at preflight #8 (the exact 2026-07-13 core-v0.8 bug).
+    # RED-first: gates the real v0.7→v0.8 regression + a v0.8→v0.8.1 fix + two hermetic /tmp fixtures
+    # (content-changed-and-bumped GREEN, content-changed-no-bump RED). Read-only git; pure bash + git.
+    release-gate-test:
+      run: bash scripts/release-gate-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # salvage (v0.21): agent work outlives its session — Claude Code persists every subagent
+    # transcript and each workflow agent's return value under ~/.claude/projects/, hook-free, so a
+    # limit-kill or SIGKILL destroys nothing. The bug was that nothing READ it, and the read side is
+    # what this asserts: found → filed under its tracker item (verbatim text as the join key, never
+    # the slug) → surfaced by the TRACKER.md render, including checkpoints matching NO active item,
+    # which must still appear rather than vanish. Plus the boot-check contract (--quiet is silent on
+    # a clean box) and liveness scoping. Hermetic (a fake $HOME with its own ~/.claude/projects
+    # tree); mutation-audited both ways — disabling the render's checkpoint index reds 5 assertions.
+    orphaned-work-test:
+      run: bash scripts/orphaned-work-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # auto-pickup (v0.22): the autonomy grant that lets a fresh worker continue tracker-authorised
+    # work with no new steer. The suite is mostly about its REFUSALS — off by default, off on the
+    # operator's kill switch, and off when the worker is restarting in a loop (auto-resume and
+    # restart-loop are the same event from opposite ends, and a loop bills for re-done work with
+    # nobody watching). Guards asserted where they are ENFORCED, in the engine before the session
+    # starts, since a prompt can be reasoned around and a bash refusal cannot. Mutation-audited:
+    # disabling the loop guard reds 6 assertions. Also pins that AUTO_PICKUP must never join the
+    # instance.env whitelist — a gitignored file may configure a worker, never ARM one.
+    # probe (07-26): a counting check that cannot report a VACUOUS green. Three times in one
+    # day a pattern that matched NOTHING read exactly like a pattern that found nothing wrong
+    # — a pgrep that matched its own command line, a mutation whose sed hit nothing, and a
+    # health sweep grepping `[ ok ]` at a tool that emits ✓ ("0 ok · 0 fail" for four repos).
+    # probe.sh forces the two apart with a mandatory positive control. The suite is RED-first
+    # about exactly that distinction: cases 3 and 4 differ ONLY in the control.
+    # mount-point (07-27): every dashboard fetch was root-absolute, so a board served under
+    # a path-routing ingress at /<tenant>/ loaded and authenticated and then 404'd every data
+    # call — presenting as "the token doesn't work". Found by the operator on his own device,
+    # not by a review, and not by my own curl of the page (which tested the PAGE, never what
+    # the page fetches). RED-first: the suite reconstructs the pre-fix form and proves it trips.
+    mc-mountpoint-test:
+      run: bash scripts/mc-mountpoint-selftest.sh
+      skip:
+        - merge
+        - rebase
+    probe-test:
+      run: bash scripts/probe-selftest.sh
+      skip:
+        - merge
+        - rebase
+    auto-pickup-test:
+      run: bash scripts/auto-pickup-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # agent-mail (v0.23): wired here because release-gate.sh discovers suites ONLY from this block —
+    # an unlisted *-selftest.sh is invisible to the gate AND skipped by manifest coverage, so it can
+    # rot red while the release reports "all suites GREEN". It shipped orphaned in the first v0.23
+    # candidate and the adversarial gate caught it; a suite nothing runs cannot fail.
+    agent-mail-test:
+      run: bash scripts/agent-mail-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # beat-length guard: listed here for the same reason the two above are — the release gate
+    # discovers suites ONLY from this block, so an unlisted suite can rot red while the release
+    # reports "all suites GREEN". This one guards the hook standing in front of the ONLY channel
+    # to the operator, where the failure mode is a SILENT gag: a worker that cannot report that it
+    # cannot report. Twelve of its lanes are fail-open proofs; they must never go unrun.
+    beat-length-guard-test:
+      run: bash scripts/beat-length-guard-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # beat NUDGE: the generation-time half of the same pair. Registered here for the identical
+    # reason — and it carries two lanes that exist because this project already paid for their
+    # absence: a consumer-parse lane (assert on json.loads of the WHOLE stdout, never a substring)
+    # and a shipped-wiring lane (a hook missing from hooks.json ships inert and green). It also
+    # runs on EVERY user turn, so a regression is charged to the whole fleet, every turn.
+    beat-nudge-test:
+      run: bash scripts/beat-nudge-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # handoff TRIGGER: the third hook on the every-user-turn path, and the one whose failure is
+    # hardest to see. It fails SILENT by design, so a broken copy and a healthy quiet one are
+    # byte-identical from outside; its suite is mostly POSITIVE lanes for exactly that reason, and
+    # an unrun suite would leave the fleet's only degradation alarm unverified.
+    context-handoff-nudge-test:
+      run: bash scripts/context-handoff-nudge-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # context-headroom: the gauge the whole "am I still sharp enough to keep going" decision reads.
+    # Registered here for the same reason as the two above — and specifically because its blind
+    # spot was not theoretical: it reported a compacted worker as the cheapest on the box, a memory
+    # recorded that, and a causal claim was built on it. These lanes are what makes the prose rule
+    # ("check for compaction before crediting technique") into something that can fail.
+    context-headroom-test:
+      run: bash scripts/context-headroom-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # agent-mail per-turn hook: listed here for the same reason the suite above is — the release
+    # gate discovers suites ONLY from this block. This one guards a hook that runs on EVERY TURN
+    # OF EVERY AGENT, so a regression here is charged to the whole fleet, every turn.
+    agent-mail-hook-test:
+      run: bash scripts/agent-mail-hook-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # workspace (v0.24): the release gate discovers suites ONLY from this block, so an unlisted
+    # suite is invisible to it AND skipped by manifest coverage — it can rot red while the
+    # release reports all-green. This one guards a fan-out, which is a new way to report green
+    # on nothing.
+    workspace-scan-test:
+      run: bash scripts/workspace-scan-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # workspace GATE ARMING (v0.24): the same discovery rule applies — an unlisted suite is
+    # invisible to the release gate. This one asserts on the CONSUMING ARTIFACT (a real `git
+    # commit` in a real member, both directions), because the failure it guards is a green
+    # "ARMED" printed over a repo where a planted secret then commits cleanly.
+    workspace-adopt-test:
+      run: bash scripts/workspace-adopt-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # shim env-seal (v0.25): this suite was an ORPHAN — listed in no lefthook block, so the release
+    # gate (which discovers suites ONLY from here) never ran it, and it is precisely the suite that
+    # pins the .kickoff/bin scan shims' `cd` — the fourth, hidden workspace guard site, rewritten by
+    # the marker change. An unregistered suite can rot red while the release reports all-green.
+    shim-env-seal-test:
+      run: bash scripts/shim-env-seal-selftest.sh
+      skip:
+        - merge
+        - rebase
+    identity-test:
+      run: bash scripts/scan-identity-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # ship-turnkey (v0.23): the release turnkey's three ordinary preconditions — fast-forwards main,
+    # tag is new, plugin invariant — ALL PASS ON A STALE BRANCH, which is how a staged release sat
+    # for a day carrying the very blocker it was held for while its header advertised a gate run
+    # from another commit. So the generator pins the SHA the gate certified and the emitted script
+    # REFUSES any other tip, and `--no-verify` cannot outlive the justification that earns it. This
+    # suite makes all of that able to FAIL: the generator refuses a --gated-at that is not the tip,
+    # the structural guard refuses 13 mutated renders, and the emitted script goes RED on a real
+    # re-staged fixture branch — with the three old checks passing first, which is the point. One
+    # lane really pushes, to a bare repo inside its own mktemp dir and nowhere else.
+    ship-turnkey-test:
+      run: bash scripts/ship-turnkey-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # memory-lifecycle Slice A: the supersede truth-invariant + the index-budget guard, each proven
+    # RED-first (a live contradiction / an over-budget index FAILS; the cleaned / under-budget case
+    # passes). Pure bash + coreutils (+ git for the supersede typo guard). Hermetic mktemp fixtures.
+    memory-supersede-test:
+      run: bash scripts/memory-supersede-selftest.sh
+      skip:
+        - merge
+        - rebase
+    memory-budget-test:
+      run: bash scripts/memory-budget-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # memory-lifecycle M2: the orphan check must be able to FAIL. It shipped without a suite and was
+    # fail-open twice over — blind below depth 1 (its own motivating ~/code/<repo> example) and
+    # substring-matching the index (`an adopter` "found" in `acmed`), both printing a reassuring green.
+    memory-orphan-test:
+      run: bash scripts/memory-orphan-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # memory DEFAULTS (second-machine batch, 2026-08-26): lib/memory.mjs's env-less corpus
+    # resolution (the old fallback matched NO real layout, so a fresh engine-source clone died
+    # as a bare ENOENT), the adopter anchor (db in the REPO, never the core clone), the
+    # explicit-MEMORY_DIR-wins precedence (set HOSTILELY — a scrub that buys determinism can
+    # delete the bug's carrier), and hook.mjs's no-index branch (ONE stderr hint, fail-open
+    # preserved — a UserPromptSubmit hook must never block a turn). Registered here because
+    # this file is the ONLY place release-gate discovers suites — an unlisted one rots red
+    # while the release reports "all suites GREEN".
+    memory-defaults-test:
+      run: bash scripts/memory-defaults-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # The front door must adopt onto the core it IS, not a hardcoded ~/kickoff-core. Found at a live adopter
+    # adopt: a v0.10 kickoff installed to a per-version dir silently pinned a stale core-v0.1, skipped
+    # the ENTIRE plugin layer, and stamped a dev path as the public remote. Decoy fixture + a real clone
+    # (a cp -r fixture drags in the origin's instance.env and false-greens).
+    core-resolution-test:
+      run: bash scripts/core-resolution-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # `kickoff adopt` ends by offering to write the project's bot token — the one setup step no agent
+    # may do, and the one input that must never leak. Every case here is a security property: no hang
+    # on a pipe, no silent write, fail-closed on a typo, an existing token never re-read or printed,
+    # 0600 + umask 077 — plus a tty POSITIVE control, without which "it never writes" passes vacuously.
+    channel-offer-test:
+      run: bash scripts/channel-offer-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # core-v0.13 moved MC's token onto INSTANCE_DIR = dirname(STATE_PATH) — correct, and INERT under the
+    # documented `python3 server.py <port>` launch: server.py read the state file from KICKOFF_STATE only,
+    # while instance.env exports (and mc-update.py reads) MC_STATE_FILE. The two halves read different
+    # vars, STATE_PATH fell back to BASE_DIR, and the token landed in the SHARED core again. This is the
+    # negative control that fix never had: token/inbox/theme follow the INSTANCE under the stock launch.
+    mc-state-resolution-test:
+      run: bash scripts/mc-state-resolution-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # `up`/`pull` silently IGNORED --dir while the shared not-your-repo error told the user to pass
+    # it — every new adopter's first launch, with advice that could not work. Structural (every verb
+    # that advertises the flag parses it) + behavioural (`up --dir <repo>` actually targets it).
+    dir-flag-test:
+      run: bash scripts/dir-flag-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # A repo's PIN is authoritative: every verb acting on an adopted repo must run the engine the pin
+    # names. cmd_up had a redirect and cmd_adopt did not, so `pull` + re-`adopt` silently ran TWO
+    # engines against one repo — the stale one wrote the token to a dead file. Nobody had pulled AND
+    # re-adopted before.
+    pin-redirect-test:
+      run: bash scripts/pin-redirect-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # `status --dir <repo>` run from the WRONG engine printed "✓ core pin HOLDS" — the core-v0.24
+    # front door said it about a repo pinned to core-v0.25, because the pin block asks whether the
+    # PINNED CLONE matches the lock and never whether IT is that clone. Two halves, both behavioural
+    # on a two-real-engine deploy fixture: REPO_DIR is TOLD (--dir / env / $0's own tree), never
+    # SENSED from the filesystem around the process — a baited ancestor core.lock must change
+    # nothing; and the running engine's identity comes from $0 + its own git HEAD alone, so no
+    # environment variable can make a stale engine claim to be the pin, and no unknown gets a tick.
+    engine-identity-test:
+      run: bash scripts/engine-identity-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # Claude Code blocks on a trust dialog the first time it opens a repo, and `kickoff up` binds the
+    # worker's stdin to a keepalive — so it is UNANSWERABLE there, by anyone. adopt (which has a real
+    # tty) is the only moment it can be granted. It must OFFER, never forge, and never damage
+    # ~/.claude.json, which every worker on the box reads.
+    trust-offer-test:
+      run: bash scripts/trust-offer-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # memory-lifecycle M2: the re-ground prompt must INSTRUCT the boot checks, never EXECUTE them.
+    # Unescaped backticks in the double-quoted REGROUND_PROMPT command-substitute, so the checks run
+    # in the wrapper and their stdout replaces their names — the worker is never told to run them and
+    # `bash -n` stays clean. Canary tripwires + a negative control (the real bug's shape must go RED).
+    reground-prompt-test:
+      run: bash scripts/reground-prompt-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # core-v0.16 crew cadence: the due-check that fires the automatic crew-review triage. Covers the
+    # fail-toward-DUE branches, clock skew, and — the two that shipped wrong — that the marker lands in
+    # the INSTANCE and not the shared core clone (two-dir fixture; a single-dir one cannot see it), and
+    # that --mark exits non-zero instead of reporting a green lie on an unwritable marker.
+    crew-review-due-test:
+      run: bash scripts/crew-review-due-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # core-v0.16 origin guard: _normalize_git_remote must equate ssh/https of the SAME repo WITHOUT
+    # ever laundering a foreign host. The HOSTILE controls are the point — an unanchored userinfo strip
+    # made `https://evil.com/a@github.com/org/repo` normalize to the canonical core and the guard
+    # ACCEPTED it. Loosening a fail-closed guard is the one direction that must never regress.
+    remote-normalize-test:
+      run: bash scripts/remote-normalize-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # core-v0.17 secrets channel: the keypair provisioner is now called AUTOMATICALLY (adopt +
+    # MC startup), which turns three latent properties into load-bearing ones — idempotence under
+    # --ensure, race safety (O_EXCL mutex, so a torn private/public pair is unrepresentable), and
+    # honest refusal on an inconsistent keydir (auto-"repair" would delete a private key, i.e. every
+    # provisioned secret). A torn pair fails GREEN: fingerprint check passes, secrets undecryptable.
+    secret-box-keygen-test:
+      run: bash scripts/secret-box-keygen-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # core-v0.17 secrets channel, the other half: the keypair is now PER-PROJECT (dirname(state)/
+    # secret-box, not ~/.kickoff/secret-box) and provisioned automatically by MC startup + adopt.
+    # This suite walks the adopter path end to end under an ISOLATED $HOME — the first draft of it
+    # would have passed with the fix deleted, because both halves resolved under $HOME and this box
+    # is already hand-provisioned, so a fixture inheriting the real $HOME serves a months-old key and
+    # reports GREEN while the adopter's channel is dead. It also pins the one divergence that fails
+    # GREEN: keygen and secret-decrypt must resolve the SAME keydir, or the panel encrypts to a key
+    # the coordinator cannot read.
+    secret-keydir-test:
+      run: bash scripts/secret-keydir-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # core-v0.17 secrets channel, THE CROSS-CONSUMER GATE. Three components resolve the keydir —
+    # secret-box-keygen.mjs, secret-decrypt.mjs, mission-control/server.py — and two are Node while
+    # one is Python, so they CANNOT share an implementation. The contract "one identical rule in
+    # every consumer" was therefore written as PROSE and implemented three times; within one slice
+    # the copies disagreed four separate ways, each of which fails GREEN (empty-keydir conflict
+    # predicate · healthy-on-public.pem-alone · KICKOFF_PUBKEY honoured only by the board · a
+    # read-only config var that became a write trigger). A sentence cannot hold that invariant; this
+    # suite can. It asks all three the same two questions — "which keydir, and what state?" — over a
+    # 19-cell environment matrix and fails on ANY disagreement, with scripts/secret-keydir.mjs's
+    # --json dump as the oracle. $HOME-isolated (this box has a real months-old keydir that
+    # false-greens an inheriting fixture) and RED-proven both against the whole pre-fix tree and
+    # against one-defect-at-a-time mutants.
+    secret-keydir-conformance-test:
+      run: bash scripts/secret-keydir-conformance-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # THE ORIGIN-IS-NOT-THE-DEPLOYMENT GATE: an adopter-facing surface (plugin/skills/**/*.md, and the
+    # operator-facing prose in scripts/kickoff) may not teach a path that only resolves in the ORIGIN.
+    # Three instances shipped in one week, every one SILENT: the board-write loop documented as
+    # `python3 mission-control/mc-update.py` ×10 (e53096c — board stayed EMPTY on every adopter), the
+    # decrypt command as `node scripts/secret-decrypt.mjs mission-control/secrets-inbox/…` (02d5db9 —
+    # wrong script path AND a bare inbox that resolves into the SHARED core clone, i.e. a cross-project
+    # leak), and the bot token written to a file nothing reads (44cc2a5 — left a live org MUTE). Each fix
+    # landed on ONE surface while a sibling kept teaching the same motion; only a gate scales. All three
+    # pre-fix texts are wired as RED controls (git show), the two shipped fixes as GREEN controls, and a
+    # stub-mutation proves the suite is non-vacuous. Read-only; pure bash + awk + git.
+    origin-only-path-test:
+      run: bash scripts/origin-only-path-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # memory-lifecycle Slice B: the recall-hook state-bearing flag (fires on pending/blocked/
+    # open/TODO/debt state, quiet on incidental "open source"). Extracts the real regexes from
+    # hook.mjs (no drift) + a wiring guard that reds if formatBlock stops emitting the flag.
+    memory-state-flag-test:
+      run: node memory-retrieval/state-flag-selftest.mjs
+      skip:
+        - merge
+        - rebase
+    # the memory-retrieval private/ subdir: a gitignored memory/private/ still indexes +
+    # recalls (RED-first, mutation-tested). Guards the "no private info tracked, recall
+    # intact" contract — private facts stay out of git but the indexer reads the FS.
+    memory-private-corpus-test:
+      run: node memory-retrieval/private-corpus-selftest.mjs
+      skip:
+        - merge
+        - rebase
+    # v0.18 planning primitives: the backlog → milestone → COMMIT (the gate) → cook lifecycle in
+    # mission-control/mc-update.py. The gate is the point — `launch` refuses an uncommitted milestone,
+    # so agents cannot cook one; the suite proves that as a MECHANISM with a mutant (guard removed →
+    # launch cooks an uncommitted milestone), i.e. the gate assertion is load-bearing, not vacuous.
+    mc-milestone-test:
+      run: bash scripts/mc-milestone-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # worker-engine seam (core-v0.39): WORKER_ENGINE is a closed set {claude|opencode} validated
+    # fail-loud before anything spawns, with preset-wins precedence — the exact surface where a
+    # typo'd or file-sourced bad engine value used to boot past every check into a session-run FATAL
+    # loop. Registered here because this file is the ONLY place release-gate discovers suites — an
+    # unlisted *-selftest.sh is invisible to the gate and skipped by manifest coverage.
+    worker-engine-test:
+      run: bash scripts/worker-engine-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # lane machinery (v0.41 fix round): lane-runner + graph-executor cannot read their
+    # OWN user-side prompts ("end with LANE-COMPLETE / NODE-COMPLETE") as completion —
+    # COMPLETE counts only in assistant text; the stall timer converts opencode's
+    # MILLISECOND timestamps and actually fires on silence (one nudge, then fail); and
+    # the dispatch-protocol doc describes lanes as they work (manual runner start,
+    # unconditional graph.json ledger — no notification path). Drives both parsers
+    # against a fake opencode serve API on an ephemeral port, HOME sandboxed so the
+    # executor's Telegram notify can never reach a real channel. RED-first: every
+    # defect lane went red against the pre-fix tree. Registered here because this file
+    # is the ONLY place release-gate discovers suites — an unlisted suite rots red
+    # while the release reports "all suites GREEN".
+    lane-machinery-test:
+      run: bash scripts/lane-machinery-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # boot-exec (v0.41 incident lane, 2026-08-26): a dist sync stripped the exec bit
+    # from the installed telegram-bot entrypoint's TARGET (~/.local/bin/opencode-telegram
+    # is a symlink → dist/cli.js). Every future session boot died "Permission denied"
+    # while already-running bots kept serving, and no gate caught it because they all
+    # READ the file — `node <file>` bypasses the exec bit. This lane resolves through
+    # the link, asserts owner-exec on the target (stat), and EXEC-launches a safe
+    # fast-exit argv (`--help`; NEVER `start`) via the launcher path itself; an in-suite
+    # negative control re-breaks a /tmp COPY at 664 and must go RED with the incident's
+    # exact shape. Absent launcher → loud SKIP, exit 0. Registered here because this
+    # file is the ONLY place release-gate discovers suites — an unlisted suite rots red
+    # while the release reports "all suites GREEN".
+    boot-exec-test:
+      run: bash scripts/boot-exec-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # bot-imports (v6.2 bug class, 2026-08-25): every settings-store export CALLED in a
+    # patched file must be in scope there — getAllUserSessions was called but never
+    # imported, and the swallowed ReferenceError froze every pinned live-progress
+    # message on 4 live orgs. Byte-drift guards can't see it (the file was internally
+    # consistent, just broken). In-suite negative controls re-break a COPY of the real
+    # file and must flag again. Skips loudly (exit 0) when the vendored snapshot dir
+    # is absent — a checkout without patches/ has no subject to scan. Registered here
+    # because this file is the ONLY place release-gate discovers suites.
+    check-bot-imports-test:
+      run: bash scripts/check-bot-imports-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # parity-ledger (the recorded-drift principle, 2026-08-28): docs/PARITY.md must MATCH what
+    # scripts/parity-report.sh probes on the real tree — a capability gap the ledger does not
+    # record (or records wrongly, either direction) fails the release gate's HARD parity-ledger
+    # lane. Every red lane in the suite is proven RED first (fixture sabotages: hook file
+    # deleted, config wiring deleted, ledger section deleted, Status flipped against reality,
+    # unprobeable section) before the coherent-tree green is trusted, and the real tree's
+    # summary counts are pinned. Registered here because this file is the ONLY place
+    # release-gate discovers suites.
+    parity-test:
+      run: bash scripts/parity-report-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # ─── stack gates — bootstrap/adopt uncomment + fill for the detected stack ───
+    # (a spun-up project ADDS its detected stack's test command, e.g.  npm test / cargo test / pytest -q)

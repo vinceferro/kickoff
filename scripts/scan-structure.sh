@@ -2,7 +2,7 @@
 # scan-structure.sh — generic structural / footgun scanner (claude-kickoff)
 #
 # Stack-light checks for the structural footguns we have actually SEEN bite a
-# real build (a prior-adopter audit + the Bliz go-live). It is ADVISORY by
+# real build (a prior-adopter audit + a production go-live). It is ADVISORY by
 # default — it prints a ranked findings list that the `harden` skill consumes
 # and closes; it does not block a commit. Run it with --strict to fail on a
 # HIGH finding (used as an opt-in gate).
@@ -26,6 +26,13 @@
 
 set -euo pipefail
 
+# Saved BEFORE the arg-parse loop below, which SHIFTS "$@" empty. Forwarding "$@" to a workspace
+# member therefore forwarded NOTHING and every member ran with DEFAULT scope: for scan-secrets
+# that only over-scans, but for scan-structure it drops --strict, which is fail-OPEN. The fan-out
+# shipped with this; adversarial review caught it. Placement matters — saving it after the loop
+# (the first attempt) captures the already-emptied array and looks identical to a fix.
+_KICKOFF_ARGV_SAVED=( "$@" )
+
 STRICT=0
 SCOPE="all"
 BIG=800        # hard threshold (HIGH)
@@ -41,13 +48,151 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+
+# --- workspace mode -------------------------------------------------------
+# THE MULTI-REPO ROOT (2026-08-04). kickoff can be mounted on a ROOT folder holding N sibling
+# repos — "a monorepo split across repos". The coordinator half of that already works; this half
+# did not. From such a root there is no git work tree, so the guard below refused and the org got
+# NO structural scan at all: the right failure direction (never a false green) but no coverage.
+#
+# If cwd is not itself a repo but CONTAINS repos, scan each. Each child runs inside a real work
+# tree, so the logic below is reached unchanged — no second implementation to drift.
+#
+# FAIL-CLOSED PRESERVED AT BOTH ENDS: a root with zero sub-repos still refuses, and any member
+# that fails fails the whole run.
+#
+# WORKSPACE-NESS IS AN EXPLICIT MARKER, NOT AN INFERENCE (v0.25) — `.kickoff/workspace`, written by
+# `kickoff adopt`/`doctor` at a non-git root and TRACKED, so it survives a fresh clone. A marked
+# root may be a git repo AND a workspace: members scanned, and the root's own tracked files too.
+# (The rule is the twin of scan-secrets.sh's — see the long note there for why the marker is
+# required rather than inferred, and for the three shapes of a `.git` FILE.)
+KICKOFF_WS_MARKER=".kickoff/workspace"
+
+kickoff_is_member_repo() {       # $1 = candidate dir → rc 0 when it is a workspace member
+  local _gd
+  [ -d "$1/.git" ] && return 0
+  [ -f "$1/.git" ] || return 1
+  _gd="$(sed -n 's/^gitdir:[[:space:]]*//p' "$1/.git" 2>/dev/null | head -n1)"
+  case "$_gd" in
+    */worktrees/*)                    return 1 ;;   # a linked worktree is never a member
+    .git/modules/*|*/.git/modules/*)  return 0 ;;   # a submodule is
+    *)                                return 1 ;;   # --separate-git-dir: not ours to claim
+  esac
+}
+
+workspace_members() {
+  local d
+  for d in */ ; do
+    kickoff_is_member_repo "${d%/}" && printf '%s\n' "${d%/}"
+  done
+}
+
+# A directory we cannot look INTO is the quietest fail-open there is: `[ -d "$d/.git" ]` simply
+# returns false, so the entry never becomes a member and the aggregate reports "clean across N
+# repos" having never opened it. Unreadable entries fail the run instead. An unreadable `.git`
+# FILE is the same fail-open one level down — since a submodule became a member, deciding
+# membership can require READING `$d/.git`, and a failed read fell through to "not a member".
+workspace_unreadable() {
+  local d
+  for d in */ ; do
+    d="${d%/}"
+    [ -d "$d" ] || continue
+    if [ ! -r "$d" ] || [ ! -x "$d" ]; then printf '%s\n' "$d"; continue; fi
+    if [ -f "$d/.git" ] && [ ! -r "$d/.git" ]; then printf '%s\n' "$d"; fi
+  done
+}
+
+# TWO ARMS, and the LEGACY one is byte-identical to what shipped: no marker + not inside a work
+# tree ⇒ exactly the old rule. The NEW arm is reachable only with the marker on disk.
+#
+# THE QUESTION IS "IS THIS ROOT'S OWN CONTENT TRACKED", NOT "IS IT THE TOPLEVEL" — a marked root
+# nested inside another work tree is fully tracked there, and asking `show-toplevel = pwd` dropped
+# it from the fan-out entirely (see the twin note in scan-secrets.sh: a committed key in the org's
+# own CLAUDE.md scanned RED before the marker and GREEN after).
+_ws_mode=0; _ws_scan_root=0; _ws_root_is_top=0; _ws_top=""
+if [ "${KICKOFF_WORKSPACE_CHILD:-0}" != "1" ]; then
+  if [ -f "$KICKOFF_WS_MARKER" ]; then
+    _ws_mode=1
+    if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      _ws_scan_root=1
+      _ws_pwd="$(pwd -P)"
+      _ws_top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+      [ -n "$_ws_top" ] && _ws_top="$(cd "$_ws_top" 2>/dev/null && pwd -P || printf '%s' "$_ws_top")"
+      [ "$_ws_top" = "$_ws_pwd" ] && _ws_root_is_top=1
+    fi
+  elif ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    _ws_mode=1
+  fi
+fi
+# SCOPE FORK — `--staged` at a marked git root is the ROOT's own commit being scored; fanning out
+# there would block it on a NEIGHBOUR's staged files. pre-push (`all`) aggregates root + members.
+if [ "$_ws_scan_root" = 1 ] && [ "$SCOPE" = "staged" ]; then
+  _ws_mode=0; _ws_scan_root=0
+fi
+if [ "$_ws_mode" = 1 ]; then
+  members=(); while IFS= read -r m; do [ -n "$m" ] && members+=("$m"); done < <(workspace_members)
+  # The unreadable sweep runs BEFORE the members>0 fork — nested inside it, a marked GIT root whose
+  # ONLY candidate member is unreadable enumerated zero members, never named the directory, and
+  # exited 0 through the plain root scan (see the twin note in scan-secrets.sh).
+  unreadable=(); while IFS= read -r u; do [ -n "$u" ] && unreadable+=("$u"); done < <(workspace_unreadable)
+  if [ "${#members[@]}" -eq 0 ] && [ "${#unreadable[@]}" -eq 0 ] && [ "$_ws_scan_root" = 1 ]; then
+    echo "⚠ scan-structure.sh: $PWD carries the workspace marker ($KICKOFF_WS_MARKER) but holds ZERO member repos — scanning this root only" >&2
+  fi
+  if [ "${#members[@]}" -gt 0 ] || [ "${#unreadable[@]}" -gt 0 ]; then
+    echo "▶ scan-structure.sh: workspace mode — ${#members[@]} repo(s) under $PWD"
+    if [ "$_ws_root_is_top" = 1 ]; then
+      echo "  (…and this root is itself a git repo — its own tracked files are scanned too)"
+    elif [ "$_ws_scan_root" = 1 ]; then
+      echo "  (…and this root's own files are tracked by the git repo at ${_ws_top:-?} — they are scanned too)"
+    fi
+    ws_rc=0; ws_failed=()
+    if [ "${#unreadable[@]}" -gt 0 ]; then
+      ws_rc=1; ws_failed+=("${unreadable[@]}")
+      echo "🔴 unreadable director(ies) — cannot tell if they are repos, refusing to call this clean: ${unreadable[*]}" >&2
+    fi
+    for m in "${members[@]}"; do
+      echo
+      echo "── $m ───────────────────────────────────────────────"
+      ( cd "$m" && KICKOFF_WORKSPACE_CHILD=1 bash "$SELF" "${_KICKOFF_ARGV_SAVED[@]}" ) || { ws_rc=1; ws_failed+=("$m"); }
+    done
+    ws_tot="${#members[@]}"
+    # The root is one more unit, reached by re-entering THIS script with the recursion guard set.
+    if [ "$_ws_scan_root" = 1 ]; then
+      ws_tot=$((ws_tot+1))
+      echo
+      echo "── (this root) ──────────────────────────────────────"
+      ( KICKOFF_WORKSPACE_CHILD=1 bash "$SELF" "${_KICKOFF_ARGV_SAVED[@]}" ) || { ws_rc=1; ws_failed+=("(this root)"); }
+    fi
+    echo
+    if [ "$ws_rc" -ne 0 ]; then
+      echo "🔴 scan-structure.sh: workspace FAILED in: ${ws_failed[*]}" >&2
+    else
+      echo "✅ scan-structure.sh: workspace clean across $ws_tot repo(s)"
+    fi
+    exit "$ws_rc"
+  fi
+fi
+
+# FAIL CLOSED, not open: `git ls-files 2>/dev/null || true` from a non-git cwd yielded an
+# EMPTY list and a green "no footguns" on ZERO files (rc=0). Both scopes here are git-backed;
+# a legitimately-empty real repo (0 tracked files) still passes green.
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "🔴 scan-structure.sh: not inside a git work tree (cwd: $PWD) — refusing to report green on zero files" >&2
+  exit 2
+fi
+
 list_files() {
   if [ "$SCOPE" = "staged" ]; then
-    git diff --cached --name-only --diff-filter=ACM 2>/dev/null || true
+    git diff --cached --name-only --diff-filter=ACM
   else
-    git ls-files 2>/dev/null || true
+    git ls-files
   fi
 }
+
+# capture ONCE and check git's exit status — inside a `< <(list_files)` process substitution
+# a git failure is silently swallowed and reads as "0 files".
+FILE_LIST="$(list_files)" || { echo "🔴 scan-structure.sh: git file listing failed — cannot scan" >&2; exit 2; }
 
 should_skip() {
   local f="$1"
@@ -147,6 +292,19 @@ while IFS= read -r f; do
     add LOW "$f:${m%%:*}" "color-mix(in oklch …) — engine-fragile; confirm on the target browser"
   done < <(grep -InE 'color-mix\(in oklch' "$f" 2>/dev/null || true)
 
+  # 7. suppressed-error-then-count assertions (shell): `foo 2>/dev/null | … | wc -l`
+  #    silently reads a FAILING command as "0 found" — the count swallows the error and a
+  #    false result flows on downstream. ADVISORY ONLY (never HIGH): a linter genuinely
+  #    can't tell a legitimate probe (`git rev-parse --verify X 2>/dev/null | wc -l`) from a
+  #    masking assertion, so this is a heads-up to eyeball, NOT a gate. One finding per file.
+  case "$f" in
+    *.sh|*.bash)
+      sup=$(grep -cE '2>/dev/null[^|]*\|.*wc[[:space:]]+-l' "$f" 2>/dev/null || true)
+      if [ "${sup:-0}" -gt 0 ]; then
+        add LOW "$f" "${sup} suppressed-error-then-count assertion(s) (2>/dev/null | … | wc -l) — a failing command reads as 0; check the exit status separately, don't count a masked error"
+      fi ;;
+  esac
+
   if grep -qiE 'errorboundary|componentDidCatch|getDerivedStateFromError' "$f" 2>/dev/null; then
     HAS_ERROR_BOUNDARY=1
   fi
@@ -158,7 +316,7 @@ while IFS= read -r f; do
     package.json) grep -qE '"react"[[:space:]]*:' "$f" 2>/dev/null && REACT_HINT=1 ;;
   esac
   case "$f" in */error.tsx|error.tsx|*/error.jsx|error.jsx) HAS_ERROR_BOUNDARY=1 ;; esac
-done < <(list_files)
+done <<< "$FILE_LIST"
 
 # 4. missing ErrorBoundary (project-level)
 if [ "$REACT_HINT" -eq 1 ] && [ "$HAS_ERROR_BOUNDARY" -eq 0 ]; then

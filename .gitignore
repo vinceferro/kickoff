@@ -1,0 +1,74 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+.scratch/
+# supervisor runtime state (refresh flag, PIDs, multi-MB rolling log)
+.kickoff/
+
+# Mission Control runtime state. kickoff-dev's OWN live board is private instance state, so the base
+# file + all its volatile siblings are local-only (the MC server + mc-update.py read from disk; adopt
+# SEEDS a fresh blank board in an adopter repo, and a release stubs it — neither needs this tracked).
+mission-control/.mission-token
+mission-control/secrets-inbox/
+mission-control/mission-state.json
+mission-control/mission-state.json.*
+
+# This repo's own working tracker is private session history (instance/operator/project state). It is
+# maintained on disk and read by the coordinator, but never tracked in the public repo.
+/TRACKER.md
+
+# Internal design / contribute-back briefs — cross-org + box specifics, not adopter-facing, not shipped.
+/docs/briefs/
+
+# Private memory facts — instance/operator/project specifics that must NEVER be tracked or
+# pushed to the public repo, but stay on disk so the memory indexer still recalls them
+# (listMemoryFiles reads memory/private/*.md from the FILESYSTEM, not git). Public,
+# transferable memories stay tracked in memory/. See memory-retrieval/private-corpus-selftest.mjs.
+/memory/private/
+# The roll-up index lists EVERY memory (its pointer descriptions name the private facts), so the
+# live full MEMORY.md is local-only. The harness loads it from disk (gitignore doesn't affect that),
+# giving the coordinator full awareness; nothing private is tracked. Adopters seed their own.
+/memory/MEMORY.md
+
+# Python bytecode — any directory (scripts/, mission-control/, …); never commit
+__pycache__/
+*.pyc
+
+# Local, secret-bearing config — never commit (holds the repo-local Telegram bot token, etc.)
+.claude/settings.local.json
+.env
+.env.*
+.envrc
+
+# build backups + render/scratch + working copies (never committed)
+*.bak-*
+mission-control/experiments/jv-*.png
+mission-control/experiments/*.STOPPED-*
+mission-control/experiments/*.fix.html
+mission-control/dashboard.cockpit.html
+mission-control/mission-state.sample.json
+*.sample.json.lock
+scratchpad/
+
+# MC-dogfood rollback backups (never track these)
+.claude/settings.json.mc-bak.*
+
+# a stray `--keydir/` dir is what a mis-quoted `--keydir <path>` invocation creates;
+# it swept a real (throwaway) RSA private key into commit ec36ce9 via `git add -A`.
+--keydir/
+secret-box/
+
+# stray lock artifact — never tracked again
+working.lock
+
+# Instance-local working artifacts, like TRACKER.md above: a plan is written against THIS
+# box's paths and processes, so it is evidence for the session that made it, not shippable
+# engine source. The design docs it feeds (docs/design/) are tracked; the plans are not.
+docs/plans/
+.claude/agents/*.pre-write-grant
+.kickoff/opencode-bridge-home/
+.kickoff/opencode-bridge.port
+
+# per-org/local patch overlay, never published
+/patches/private/

@@ -35,6 +35,9 @@ KICKOFF="$REPO/scripts/kickoff"
 # env. Unset the whole whitelist (+ its channel/lock siblings) ONCE here — the SAME set reconcile-selftest
 # .sh scrubs — BEFORE any fixture setup; the per-fixture `export`s below intentionally re-set their own
 # values AFTER this and are preserved.
+# Ambient git env OVERRIDES `git -C <fixture>` (seen live 2026-08-23: fixture commits+tag
+# landed on a live repo at the v0.39 pin and leaked a stray core-vT tag) - strip it first.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE 2>/dev/null || true
 unset REPO_DIR KICKOFF_CORE_DIR KICKOFF_CORE_REMOTE MC_STATE_FILE MC_TRACKER_FILE \
       MEMORY_DB MEMORY_HOOK_LOG MEMORY_DIR MEMORY_INDEX TELEGRAM_STATE_DIR CHANNEL_SPEC \
       REGROUND_PROMPT PERMISSION_MODE EFFORT MODEL MAX_CONCURRENT_AGENTS DEPLOY_BRANCH \
@@ -673,6 +676,51 @@ RAOUT="$(mk)"; printf 'victim\n' > "$RAOUT/v.txt"; ln -s "$RAOUT" "$RAFIX/escape
 RARC2=0; python3 "$AM" reassert-file --repo "$RAFIX" --path escape/v.txt --from "$RASNAP/settings.json.snap" >/dev/null 2>&1 || RARC2=$?
 chk "reassert SYMLINK-SAFE: REFUSES a path resolving OUTSIDE the repo (exit non-zero)"               "[ $RARC2 -ne 0 ]"
 chk "reassert SYMLINK-SAFE: the out-of-repo victim was NOT overwritten"                              "grep -qx 'victim' \"$RAOUT/v.txt\""
+echo
+
+echo "16. FRESH-CREATE root lefthook.yml: eject removes the wiring when unchanged, keeps an operator edit"
+# The gap the pre-existing-lefthook fixtures (§B) never covered: adopt on a repo with NO lefthook.yml
+# CREATES one (created/seeded-instance — pure gate WIRING whose `extends:` points INTO .kickoff/).
+# The old seeded-instance always-keep left it behind after eject rm -rf'd .kickoff/ — a `?? lefthook.yml`
+# with a DANGLING extends (the plugin-selftest byte-restore lanes caught it). Rule under test:
+# delete-if-unchanged / keep-if-diverged — the divergence-keep policy is preserved, never clobbered.
+# HERMETIC: isolated adopters registry + a failing stub `claude` on PATH (plugin enablement skips
+# cleanly, nothing recorded) so the REAL adopt→eject motion runs with zero user-global touches.
+LHSTUB="$(mk)"; printf '#!/bin/sh\nexit 1\n' > "$LHSTUB/claude"; chmod +x "$LHSTUB/claude"
+LHREG="$(mk)/adopters.json"
+
+# (a) UNCHANGED: adopt (no pre-existing lefthook.yml) → eject → the created root lefthook.yml is GONE.
+LH1="$(mk)"
+git -C "$LH1" init -q; git -C "$LH1" config user.email t@t.t; git -C "$LH1" config user.name t
+printf 'readme\n' > "$LH1/README.md"; git -C "$LH1" add -A; git -C "$LH1" commit -qm baseline
+KICKOFF_ADOPTERS_REGISTRY="$LHREG" PATH="$LHSTUB:$PATH" \
+  bash "$KICKOFF" adopt --dir "$LH1" --accept </dev/null >/dev/null 2>&1 || true
+chk "fresh-create precondition: adopt CREATED the root lefthook.yml (none pre-existed)" \
+  "grep -q 'lefthook-kickoff' \"$LH1/lefthook.yml\""
+chk "fresh-create precondition: recorded created/seeded-instance in the manifest" \
+  "jq -e '.entries[] | select(.path==\"lefthook.yml\" and .action==\"created\" and .class==\"seeded-instance\")' \"$LH1/.kickoff/adopt-manifest.json\""
+LH1RC=0
+KICKOFF_ADOPTERS_REGISTRY="$LHREG" PATH="$LHSTUB:$PATH" \
+  bash "$KICKOFF" eject --dir "$LH1" --no-archive --delete-data --confirm-destroy >/dev/null 2>&1 || LH1RC=$?
+chk "fresh-create (unchanged): eject exits 0"                                   "[ $LH1RC -eq 0 ]"
+chk "fresh-create (unchanged): the created root lefthook.yml is GONE (no dangling-extends residue)" \
+  "[ ! -e \"$LH1/lefthook.yml\" ]"
+chk "fresh-create (unchanged): porcelain carries NO lefthook.yml residue" \
+  "! git -C \"$LH1\" status --porcelain | grep -q 'lefthook.yml'"
+
+# (b) DIVERGED: the operator edited the created root lefthook.yml after adopt → eject KEEPS it.
+LH2="$(mk)"
+git -C "$LH2" init -q; git -C "$LH2" config user.email t@t.t; git -C "$LH2" config user.name t
+printf 'readme\n' > "$LH2/README.md"; git -C "$LH2" add -A; git -C "$LH2" commit -qm baseline
+KICKOFF_ADOPTERS_REGISTRY="$LHREG" PATH="$LHSTUB:$PATH" \
+  bash "$KICKOFF" adopt --dir "$LH2" --accept </dev/null >/dev/null 2>&1 || true
+printf '\npre-commit:\n  commands:\n    my-op-gate:\n      run: echo mine\n' >> "$LH2/lefthook.yml"   # diverge
+LH2OUT="$(KICKOFF_ADOPTERS_REGISTRY="$LHREG" PATH="$LHSTUB:$PATH" \
+  bash "$KICKOFF" eject --dir "$LH2" --no-archive --delete-data --confirm-destroy 2>&1)" || true
+chk "fresh-create (diverged): the edited root lefthook.yml is KEPT (no silent-delete)" \
+  "[ -f \"$LH2/lefthook.yml\" ]"
+chk "fresh-create (diverged): the operator's own gate SURVIVES"                 "grep -q 'my-op-gate' \"$LH2/lefthook.yml\""
+chk "fresh-create (diverged): eject reports it DIVERGED (kept)"                 "printf '%s' \"\$LH2OUT\" | grep -q 'lefthook.yml  DIVERGED'"
 echo
 
 echo "──────────────────────────────"

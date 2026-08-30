@@ -30,6 +30,9 @@ printf 'DELETE FROM users;\nCREATE POLICY p ON t FOR SELECT USING (true);\n' > "
 yes "// filler" | head -n 850 > "$T/src/huge.ts"
 printf '{ "dependencies": { "react": "^19.0.0" } }\n' > "$T/package.json"
 printf 'export const A = () => <div/>;\n' > "$T/src/App.tsx"
+# a shell script with the suppressed-error-then-count footgun (advisory lane): a failing
+# command whose error is discarded then counted reads as "0 found" — a silent false result.
+printf 'n=$(grep foo bar 2>/dev/null | wc -l)\necho "$n"\n' > "$T/probe.sh"
 ( cd "$T" && git add -A )
 SEC=$(cd "$T" && bash "$REPO/scripts/scan-secrets.sh" --warn-only 2>&1)
 STR=$(cd "$T" && bash "$REPO/scripts/scan-structure.sh" 2>&1)
@@ -41,6 +44,7 @@ chk "DELETE-without-WHERE detected"   "echo \"\$STR\" | grep -q 'DELETE without 
 chk "broad RLS/grant detected"        "echo \"\$STR\" | grep -q 'broad RLS'"
 chk "oversized file detected"         "echo \"\$STR\" | grep -q 'oversized file'"
 chk "missing ErrorBoundary detected"  "echo \"\$STR\" | grep -q 'ErrorBoundary'"
+chk "suppressed-error-then-count detected" "echo \"\$STR\" | grep -q 'suppressed-error-then-count'"
 chk "secret scan exits non-zero on a finding" "! (cd \"$T\" && bash \"$REPO/scripts/scan-secrets.sh\" >/dev/null 2>&1)"
 rm -rf "$T"
 echo
@@ -75,6 +79,13 @@ if command -v node >/dev/null 2>&1; then
   chk "tampered payload is rejected" "! node \"$REPO/scripts/secret-decrypt.mjs\" --priv \"$KD/private.pem\" \"$KD/bad.json\" >/dev/null 2>&1"
   node "$REPO/scripts/secret-encrypt.mjs" "$KD/public.pem" "$(printf 'v\nEVIL=1')" | node "$REPO/scripts/secret-decrypt.mjs" --priv "$KD/private.pem" --write-env "$KD/x.env" --key K >/dev/null 2>&1
   chk "newline injection into .env refused" "! grep -q EVIL \"$KD/x.env\" 2>/dev/null"
+  # POSITIVE CONTROL for --write-env (the happy path the negative check above cannot prove — it passes
+  # identically whether the write SUCCEEDS or the process CRASHES before writing). A dropped `join`
+  # import shipped exactly this way: --write-env threw ReferenceError, x.env was never written, and the
+  # "refused" assertion above went green on the crash. This cell fails on that crash: it asserts the
+  # value actually LANDS. Mirrors the command the mission-control skill documents (--allow + --key).
+  node "$REPO/scripts/secret-encrypt.mjs" "$KD/public.pem" "sk_pos_control_9f3a" | node "$REPO/scripts/secret-decrypt.mjs" --priv "$KD/private.pem" --write-env "$KD/w.env" --key POSK --allow POSK >/dev/null 2>&1
+  chk "--write-env upserts the value (positive control)" "grep -q '^POSK=sk_pos_control_9f3a\$' \"$KD/w.env\" 2>/dev/null"
   rm -rf "$KD"
 else
   echo "  ⚠ node not found — skipping the secret-provisioning checks"

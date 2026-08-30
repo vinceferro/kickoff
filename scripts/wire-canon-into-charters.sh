@@ -24,6 +24,31 @@ import os, re, sys
 root, mode = sys.argv[1], sys.argv[2]
 START, END = "<!-- CANON:START (wire-canon-into-charters.sh) -->", "<!-- CANON:END -->"
 
+# Appended to EVERY charter below. An output style shapes the main conversation only —
+# subagents run their own system prompt and never see it. This repo delegates nearly all
+# real work to specialists, so without this the operator gets a plain-speaking coordinator
+# relaying verbose specialists. Keep in step with .claude/output-styles/plain-report.md.
+SHARED = """
+
+## Canon — report it plainly
+
+- **Lead with the answer.** First line = what you did, whether it worked, what the reader does
+  next. Assume they are tired, on a phone, and have to decide something.
+- **Short sentences, small words, exact identifiers.** Instructions under 20 words, one per
+  sentence, active voice. Never abbreviate a path, command or flag to shorten a line.
+- **Two options at most**, plus your recommendation and one reason. Not a menu.
+- **Budget the WHOLE report, not just the sentences.** Every other rule here caps a part, so a
+  report can obey all of them and still be too long. Lead with the verdict; push evidence, logs
+  and long lists into files and name the path. Your report costs the coordinator context it needs
+  for the next decision. (The operator-facing channel has a hard 12-line ceiling on top of this —
+  that one is the coordinator's to keep, and it is enforced by a hook, not by good intentions.)
+- **State uncertainty, never stack it.** "I did not test this" and "this is 3 runs, not a law"
+  are correct. Chained modals that hide who is unsure are not. Honesty outranks brevity — spend
+  the sentence on the caveat.
+- **This binds your REPORT, not your analysis.** Design notes, findings and evidence stay plain
+  prose; procedure-language strips the caveats an argument needs. Full style:
+  `.claude/output-styles/plain-report.md`."""
+
 blocks = {
   ".claude/agents/builder.md": """## Canon — render it and look
 
@@ -58,6 +83,9 @@ blocks = {
   matters · scanned · honest-stage. Anything with a UI is rendered and looked at (the render is
   not the device — never claim cross-engine "verified"). Full set: CLAUDE.md -> "The quality bar".""",
 }
+
+# Every charter inherits the reporting rules, because no output style can reach a subagent.
+blocks = {rel: body + SHARED for rel, body in blocks.items()}
 
 changed = []
 for rel, block in blocks.items():

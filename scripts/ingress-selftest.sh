@@ -371,6 +371,70 @@ chk "preflight #2: a registry channel clash is a [FAIL]" "printf '%s' \"\$JPFO\"
 KICKOFF_ADOPTERS_REGISTRY="$JREG3" python3 "$AM" adopters-register --repo "$JB" --tag core-vSIB --version-dir "$JB" --channel "$JOTH" >/dev/null 2>&1
 JPFO2="$(env -u TELEGRAM_STATE_DIR -u ORIGIN_STATE_DIR -u OPERATOR_STATE_DIR REPO_DIR="$JPA" KICKOFF_ADOPTERS_REGISTRY="$JREG3" bash "$PREF" 2>&1 || true)"
 chk "preflight #2: a DIFFERENT sibling channel → NO channel-clash FAIL" "! printf '%s' \"\$JPFO2\" | grep -iE '\\[FAIL\\].*(channel clash|shares this repo)'"
+
+# ── READER HALF of the core-v0.27 channel cross-wire ────────────────────────────────────────
+# Every lane ABOVE scrubs the ambient channel (`env -u TELEGRAM_STATE_DIR …`) "so the fixture's
+# wins" — which is precisely the case the bug is NOT in. The live shape is the opposite: a
+# `kickoff pull`/preflight for repo B run from INSIDE repo A's worker session (every fleet sweep)
+# carries A's channel ambiently. preflight honored it (TELEGRAM_STATE_DIR was subject to
+# pre-set-wins, and the adopter's self-defaulting `${TELEGRAM_STATE_DIR:-…}` form kept it even
+# inside the import subshell), so #2 evaluated A's channel as if it were B's and FAILED a phantom
+# "channel clash" against A itself — fail-closed, blocking B's pull and A's hop with no clash on
+# the box. v0.27 fixed the WRITERS (cmd_pull/cmd_adopt); this is the reader.
+JR="$(mk)"; JRB="$JR/repo-b"; JRA="$JR/repo-a"; JRCB="$JR/chan-b"; JRCA="$JR/chan-a"
+mkdir -p "$JRB/.kickoff/memory" "$JRA" "$JRCB" "$JRCA"
+JRCBr="$(cd "$JRCB" && pwd -P)"; JRCAr="$(cd "$JRCA" && pwd -P)"; JRAr="$(cd "$JRA" && pwd -P)"
+printf '# m\n' > "$JRB/.kickoff/memory/MEMORY.md"
+# the SELF-DEFAULTING form real adopters ship (instance.env.example seeds it) — an ambient value
+# survives a plain source, which is what makes the unset inside the import subshell load-bearing
+# rather than decoration.
+printf 'export TELEGRAM_STATE_DIR="${TELEGRAM_STATE_DIR:-%s}"\n' "$JRCBr" > "$JRB/.kickoff/instance.env"
+chk "reader fixture: the target's instance.env really uses the self-defaulting \${TELEGRAM_STATE_DIR:-…} form" \
+  "grep -q 'export TELEGRAM_STATE_DIR=\"\${TELEGRAM_STATE_DIR:-' \"$JRB/.kickoff/instance.env\""
+JRREG="$JR/reg.json"
+KICKOFF_ADOPTERS_REGISTRY="$JRREG" python3 "$AM" adopters-register --repo "$JRA" --tag core-vA --version-dir "$JRA" --channel "$JRCAr" >/dev/null 2>&1
+KICKOFF_ADOPTERS_REGISTRY="$JRREG" python3 "$AM" adopters-register --repo "$JRB" --tag core-vB --version-dir "$JRB" --channel "$JRCBr" >/dev/null 2>&1
+# NOTE the arg order: `env` rejects -u AFTER an assignment, and an env that never launches
+# preflight leaves the output EMPTY — every assertion below would then pass on a world nobody
+# lives in. The gate-line guard immediately after is what makes this lane non-vacuous.
+JRPF="$(env -u ORIGIN_STATE_DIR -u OPERATOR_STATE_DIR TELEGRAM_STATE_DIR="$JRCAr" \
+        REPO_DIR="$JRB" KICKOFF_ADOPTERS_REGISTRY="$JRREG" bash "$PREF" 2>&1 || true)"
+chk "reader lane is NON-VACUOUS: preflight actually ran (emitted gate lines)" \
+  "printf '%s' \"\$JRPF\" | grep -qiE '\\[( ?ok ?|FAIL|WARN)\\]'"
+chk "reader [RED pre-fix]: ambient CALLER channel → preflight reports the TARGET's OWN channel" \
+  "printf '%s' \"\$JRPF\" | grep -qF 'TELEGRAM_STATE_DIR=$JRCBr'"
+chk "reader [RED pre-fix]: the CALLER's channel is NOT reported as the target's" \
+  "! printf '%s' \"\$JRPF\" | grep -qF 'TELEGRAM_STATE_DIR=$JRCAr'"
+chk "reader [RED pre-fix]: NO phantom channel clash (the two repos hold DIFFERENT channels)" \
+  "! printf '%s' \"\$JRPF\" | grep -iE '\\[FAIL\\].*(channel clash|shares this repo)'"
+chk "reader [RED pre-fix]: the sibling repo is not named as a clash" \
+  "! printf '%s' \"\$JRPF\" | grep -qF '$JRAr'"
+# NEGATIVE CONTROL — the guard must not be merely disabled: with the target's OWN instance.env
+# naming the sibling's channel, that IS a real double-poller and #2 must still FAIL, ambient or not.
+printf 'export TELEGRAM_STATE_DIR="${TELEGRAM_STATE_DIR:-%s}"\n' "$JRCAr" > "$JRB/.kickoff/instance.env"
+JRPFN="$(env -u ORIGIN_STATE_DIR -u OPERATOR_STATE_DIR TELEGRAM_STATE_DIR="$JRCAr" \
+         REPO_DIR="$JRB" KICKOFF_ADOPTERS_REGISTRY="$JRREG" bash "$PREF" 2>&1 || true)"
+chk "reader NEGATIVE CONTROL: a REAL clash (target's own env names the sibling's channel) still FAILs" \
+  "printf '%s' \"\$JRPFN\" | grep -iE '\\[FAIL\\].*(channel clash|shares this repo)'"
+# RED-on-old — prove the lane FAILS against the pre-fix preflight, so it is a real negative control
+# and not four assertions that would pass on any build.
+JROLD="$JR/preflight-head.sh"
+if git -C "$REPO" show HEAD:scripts/preflight.sh > "$JROLD" 2>/dev/null && [ -s "$JROLD" ]; then
+  printf 'export TELEGRAM_STATE_DIR="${TELEGRAM_STATE_DIR:-%s}"\n' "$JRCBr" > "$JRB/.kickoff/instance.env"
+  JROUT="$(env -u ORIGIN_STATE_DIR -u OPERATOR_STATE_DIR TELEGRAM_STATE_DIR="$JRCAr" \
+           REPO_DIR="$JRB" KICKOFF_ADOPTERS_REGISTRY="$JRREG" bash "$JROLD" 2>&1 || true)"
+  if printf '%s' "$JROUT" | grep -qiE '\[( ?ok ?|FAIL|WARN)\]'; then
+    if printf '%s' "$JROUT" | grep -qF "TELEGRAM_STATE_DIR=$JRCAr"; then
+      ok "RED-on-old: HEAD:preflight.sh DOES report the caller's channel (the lane is a real negative control)"
+    else
+      echo "  skip RED-on-old n/a — HEAD:scripts/preflight.sh already carries the reader fix (post-commit state)"
+    fi
+  else
+    echo "  skip RED-on-old n/a — HEAD:scripts/preflight.sh did not run standalone here"
+  fi
+else
+  echo "  skip RED-on-old n/a — no git HEAD copy of scripts/preflight.sh available"
+fi
 echo
 
 # ══════════════════════════════════════════════════════════════════════════════════════

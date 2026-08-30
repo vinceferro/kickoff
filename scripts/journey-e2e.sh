@@ -32,6 +32,12 @@
 #                 instance state ACCUMULATES (a board headline/log + a memory) so eject relocation is real.
 #   5. SERVE    — the REAL ingress.sh over a SCRATCH INGRESS_DIR + scratch port + fixture upstream.
 #   6. UPGRADE  — the REAL `kickoff pull` re-pins the core while the operator-owned layer stays byte-identical.
+#   6c. UPGRADE-HOP — THE G1 ACCEPTANCE (v0.7 slice 6): an adopter on fixture-tag N with a REAL
+#                 supervisor + a stub session → ONE `kickoff pull` of N+1 → the supervisor HOPS
+#                 (same PID, engine N+1's code), the session respawns from the N+1 engine dir,
+#                 PERMISSION_MODE carries, instance.env MODEL/EFFORT re-resolve (not fossil env).
+#   6d. RED-FIRST — the same lane against a REAL core-v0.6 supervisor (no hop unit): the hop
+#                 assertions provably FAIL (no hop ever fires) — §3's honest asterisk, proven.
 #   7. EJECT    — the REAL `kickoff eject --verify` (DEFAULT keep): settings.json + CLAUDE.md byte-restored
 #                 to their EXACT originals (sha256); seams gone; the SKILL-AUTHORED seeded-instance
 #                 deliverables SURVIVE (crew/TRACKER in place, KICKOFF.local.md + memory corpus relocated
@@ -69,6 +75,9 @@ LIVE_INGRESS="${INGRESS_LIVE_DIR:-$HOME/box-ingress}"   # the live singleton —
 # run leaks the live channel/data paths into the fixtures' engine calls and false-fails (e.g. preflight's
 # pull-adopter data-path isolation). Unset the whole whitelist ONCE here — the SAME set the unit suites
 # scrub — before any fixture setup; the per-fixture kf/kfl wrappers set their own values after this.
+# Ambient git env OVERRIDES `git -C <fixture>` (seen live 2026-08-23: fixture commits+tag
+# landed on a live repo at the v0.39 pin and leaked a stray core-vT tag) - strip it first.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE 2>/dev/null || true
 unset REPO_DIR KICKOFF_CORE_DIR KICKOFF_CORE_REMOTE MC_STATE_FILE MC_TRACKER_FILE \
       MEMORY_DB MEMORY_HOOK_LOG MEMORY_DIR MEMORY_INDEX TELEGRAM_STATE_DIR CHANNEL_SPEC \
       REGROUND_PROMPT PERMISSION_MODE EFFORT MODEL MAX_CONCURRENT_AGENTS DEPLOY_BRANCH \
@@ -87,9 +96,26 @@ done
 # ── ONE EXIT trap: clean our OWN mktemp dirs (never a wildcard sweep) + kill the fixture upstream ──
 CLEANUP_LIST="$(mktemp)"
 UPSTREAM_PID=""
+# exact-pid teardown for stage (6c/6d)'s fixture supervisors + their stub sessions: every pid
+# in $JRNY_PIDS was spawned BY THIS TEST (recorded at spawn) — never a pattern kill. The
+# trailing group-kill reaps a fixture supervisor's setsid'd session group by that exact pgid.
+JRNY_PIDS="$(mktemp)"
 mk() { local d; d="$(mktemp -d)"; printf '%s\n' "$d" >> "$CLEANUP_LIST"; printf '%s' "$d"; }
 cleanup() {
   [ -n "$UPSTREAM_PID" ] && kill "$UPSTREAM_PID" 2>/dev/null
+  if [ -f "$JRNY_PIDS" ]; then
+    while IFS= read -r _p; do
+      case "$_p" in ''|*[!0-9]*) continue ;; esac
+      kill -TERM "$_p" 2>/dev/null || true
+    done < "$JRNY_PIDS"
+    sleep 1
+    while IFS= read -r _p; do
+      case "$_p" in ''|*[!0-9]*) continue ;; esac
+      kill -KILL "$_p" 2>/dev/null || true
+      kill -KILL -- "-$_p" 2>/dev/null || true
+    done < "$JRNY_PIDS"
+    rm -f "$JRNY_PIDS"
+  fi
   while IFS= read -r _d; do [ -n "$_d" ] && rm -rf "$_d"; done < "$CLEANUP_LIST"
   rm -f "$CLEANUP_LIST"
 }
@@ -427,8 +453,24 @@ EOF
   printf -- '- widget-cadence — ships weekly Thursdays\n' >> "$repo/.kickoff/memory/MEMORY.md"
   python3 "$AMC" record --repo "$repo" --path .kickoff/memory/MEMORY.md --action modified --class seeded-instance --source authored-for-repo --original-from "$pre/MEMORY.md.pre" >/dev/null
 
-  # (4) .kickoff/lefthook-kickoff.yml — the kickoff gate file, stack-tuned = adopter-owned (created/seeded)
-  cat > "$repo/.kickoff/lefthook-kickoff.yml" <<'YML'
+  # (4) .kickoff/lefthook-kickoff.yml — `kickoff adopt` now authors + records the GENERIC gate file
+  #     mechanically (scout #1/#2); the session only ADDS the stack gates to the EXISTING file, recording
+  #     its edit modified/seeded-instance WITH the pre-edit bytes (the record rule for an edit to a
+  #     pre-existing adopter file). The layered created+modified pair reverses like CLAUDE.md's: the
+  #     modify byte-restores adopt's generic file, then --purge deletes the now-pristine created file —
+  #     zero trace. Guard the old-core shape (file absent) for back-compat.
+  if [ -f "$repo/.kickoff/lefthook-kickoff.yml" ]; then
+    cp "$repo/.kickoff/lefthook-kickoff.yml" "$pre/lefthook-kickoff.yml.pre"
+    cat >> "$repo/.kickoff/lefthook-kickoff.yml" <<'YML'
+# stack gates added by the /adopt session (detected stack)
+pre-merge-commit:
+  commands:
+    stack-test:
+      run: echo stack-test
+YML
+    python3 "$AMC" record --repo "$repo" --path .kickoff/lefthook-kickoff.yml --action modified --class seeded-instance --source authored-for-repo --original-from "$pre/lefthook-kickoff.yml.pre" >/dev/null
+  else
+    cat > "$repo/.kickoff/lefthook-kickoff.yml" <<'YML'
 pre-commit:
   commands:
     secret-scan:
@@ -438,9 +480,11 @@ pre-push:
     structure-scan:
       run: bash .kickoff/bin/scan-structure
 YML
-  python3 "$AMC" record --repo "$repo" --path .kickoff/lefthook-kickoff.yml --action created --class seeded-instance --source authored-for-repo >/dev/null
+    python3 "$AMC" record --repo "$repo" --path .kickoff/lefthook-kickoff.yml --action created --class seeded-instance --source authored-for-repo >/dev/null
+  fi
 
-  # (5) root lefthook.yml — ABSENT here → create it with the `extends` + a `# kickoff` marker (created/seeded)
+  # (5) root lefthook.yml — normally ALREADY wired by `kickoff adopt`; author it only when absent
+  #     (the old-core back-compat shape), recorded created/seeded exactly as adopt would.
   if [ ! -f "$repo/lefthook.yml" ]; then
     printf 'extends: [.kickoff/lefthook-kickoff.yml]\n# kickoff\n' > "$repo/lefthook.yml"
     python3 "$AMC" record --repo "$repo" --path lefthook.yml --action created --class seeded-instance --source authored-for-repo >/dev/null
@@ -496,7 +540,7 @@ chk "the planted secret really IS in settings.local.json (proves later grep woul
 stage "(2) ADOPT — the REAL \`kickoff adopt\`: additive, .kickoff/ created, seams recorded"
 # ══════════════════════════════════════════════════════════════════════════════════════
 KF_REPO="$FIX"
-ADOPT_OUT="$(kf adopt --dir "$FIX" 2>&1)"; ADOPT_RC=$?
+ADOPT_OUT="$(kf adopt --dir "$FIX" --accept </dev/null 2>&1)"; ADOPT_RC=$?   # --accept: §4 scripted consent (the fixture tests the wiring, not the gate)
 chk "adopt exits 0" "[ $ADOPT_RC -eq 0 ]"
 chk ".kickoff/ was created" "[ -d \"$FIX/.kickoff\" ]"
 chk ".kickoff/bin/mc seam shim was generated (0755)" \
@@ -552,9 +596,11 @@ chk "/adopt authored the .kickoff/memory corpus + RECORDED it (created/seeded-in
   "[ -f \"$FIX/.kickoff/memory/widget-cadence.md\" ] && [ \"\$(_ENTRY .kickoff/memory/widget-cadence.md class)\" = seeded-instance ]"
 chk "the MEMORY.md index edit is RECORDED modified/seeded-instance WITH the pre-edit original" \
   "[ \"\$(_ENTRY .kickoff/memory/MEMORY.md action)\" = modified ] && python3 -c \"import json;e=[x for x in json.load(open('$MANIFEST'))['entries'] if x['path']=='.kickoff/memory/MEMORY.md'][0];assert e.get('original')\""
-chk "/adopt authored .kickoff/lefthook-kickoff.yml + RECORDED it (created/seeded-instance)" \
+chk "the gate file .kickoff/lefthook-kickoff.yml exists (kickoff adopt authored it) + RECORDED created/seeded-instance" \
   "[ -f \"$FIX/.kickoff/lefthook-kickoff.yml\" ] && [ \"\$(_ENTRY .kickoff/lefthook-kickoff.yml class)\" = seeded-instance ]"
-chk "/adopt created root lefthook.yml (extends the kickoff gate) + RECORDED it created/seeded-instance" \
+chk "the /adopt session ADDED its stack gate to the EXISTING gate file + RECORDED the edit modified/seeded-instance (layered, byte-restorable)" \
+  "grep -q 'stack-test' \"$FIX/.kickoff/lefthook-kickoff.yml\" && python3 -c \"import json;es=[e for e in json.load(open('$MANIFEST'))['entries'] if e['path']=='.kickoff/lefthook-kickoff.yml'];assert any(e['action']=='created' for e in es);assert any(e['action']=='modified' and e.get('original') for e in es)\""
+chk "root lefthook.yml wired (extends the kickoff gate) + RECORDED created/seeded-instance" \
   "[ -f \"$FIX/lefthook.yml\" ] && grep -q 'extends' \"$FIX/lefthook.yml\" && [ \"\$(_ENTRY lefthook.yml class)\" = seeded-instance ]"
 chk "/adopt added CLAUDE.md content + RECORDED it modified/SEAM (byte-restore, LAYERED on adopt's block)" \
   "grep -q 'Coordinator notes' \"$FIX/CLAUDE.md\" && python3 -c \"import json;es=[x for x in json.load(open('$MANIFEST'))['entries'] if x['path']=='CLAUDE.md'];assert any(e['action']=='modified' and e['class']=='seam' and e.get('original') for e in es), 'no modified/seam CLAUDE.md entry';assert any(e['action']=='block-appended' for e in es), 'no block-appended CLAUDE.md entry'\""
@@ -675,6 +721,239 @@ chk "TAMPER restored: verify is GREEN again after byte-restoring core.lock (fixt
   "[ $VERIFY_RESTORE_RC -eq 0 ]"
 
 # ══════════════════════════════════════════════════════════════════════════════════════
+stage "(6c) UPGRADE-HOP — THE G1 ACCEPTANCE: one \`kickoff pull\` leaves the RUNNING worker on the new engine"
+# ══════════════════════════════════════════════════════════════════════════════════════
+# v0.7 G1 slice 6 (design §4 journey-e2e row): an adopter fixture pinned to fixture-tag N runs a
+# REAL v0.7 supervisor whose default START_CMD spawns ITS OWN engine's REAL session-run.sh, whose
+# `exec claude` resolves to a hermetic worker-stub `claude` on PATH (records argv/env, then sleeps —
+# NEVER a real claude). One REAL `kickoff pull core-vJ2` — run from inside the fixture via the
+# pinned engine's own front door, exactly the production flow — must leave the worker fully on the
+# new engine: the supervisor HOPS (same PID, engine N+1's supervisor.sh executing), the stub session
+# is respawned from the N+1 engine dir, PERMISSION_MODE rides the exec unchanged, and instance.env's
+# MODEL/EFFORT are intact and RE-RESOLVED (the launch env carries deliberately-DIFFERENT fossil
+# values, so a fossil surviving the hop is detectable). REAL gates end-to-end — the engines carry
+# the real preflight.sh and the supervisor runs its full fail-closed gate at launch, at the hop
+# boundary, and at the post-exec startup ([[fixture-can-mask-the-bug-it-should-catch]]: no stub
+# preflights anywhere on this lane).
+#
+# A SIBLING adopter registered at tag N forces the pull onto the parked-worktree path (the real
+# multi-org topology — multiple adopter orgs share one box), so engine N+1 lands at a genuinely
+# DIFFERENT dir ($KICKOFF_VERSIONS_DIR/core-vJ2) and "respawned from the N+1 engine dir" is
+# unambiguous. NOTE the refresh-flag proof is structural: MAX_SESSION_SECONDS=0 + an immortal stub
+# session means the ONLY path to a session boundary (where the hop fires) is the flag the pull
+# touches — a hop landing at all PROVES the flag was touched and consumed.
+
+build_upgrade_origin() {   # $1 = dir, $2 = green|red — a core origin with tags core-vJ1 (N) + core-vJ2 (N+1)
+  local o="$1" mode="$2" rel
+  while IFS= read -r rel; do
+    rel="${rel%$'\r'}"; [ -z "$rel" ] && continue
+    case "$rel" in \#*) continue ;; esac
+    [ -e "$REPO/$rel" ] || continue
+    mkdir -p "$o/$(dirname "$rel")"
+    cp -a "$REPO/$rel" "$o/$rel"
+  done < "$MANIFEST_SRC"
+  [ -f "$o/CORE-CHANGELOG.md" ] || printf '# CORE-CHANGELOG\n' > "$o/CORE-CHANGELOG.md"
+  if [ "$mode" = red ]; then
+    # RED-first fixture: engine N's supervisor.sh is the REAL core-v0.6 one (no hop unit) —
+    # extracted READ-ONLY via `git show` (never a checkout, never a tag/branch mutation).
+    git -C "$REPO" show core-v0.6:scripts/supervisor.sh > "$o/scripts/supervisor.sh"
+  fi
+  git -C "$o" init -q; git -C "$o" config user.email e@e.e; git -C "$o" config user.name e
+  git -C "$o" add -A; git -C "$o" commit -qm "engine N" >/dev/null; git -C "$o" tag core-vJ1
+  if [ "$mode" = red ]; then
+    cp -a "$REPO/scripts/supervisor.sh" "$o/scripts/supervisor.sh"   # N+1 is the full v0.7 engine again
+  fi
+  printf 'engine N+1 marker\n' > "$o/ENGINE-J2-MARKER"
+  printf '\n## core-vJ2 — 2026-07-13\n\nthe upgrade-lane target tag.\n' >> "$o/CORE-CHANGELOG.md"
+  git -C "$o" add -A; git -C "$o" commit -qm "engine N+1" >/dev/null; git -C "$o" tag core-vJ2
+  git -C "$o" commit --allow-empty -qm post >/dev/null
+}
+
+build_upgrade_adopter() {   # $1 = repo, $2 = engine dir, $3 = origin, $4 = engine-N commit
+  mkdir -p "$1/.kickoff/memory" "$1/.kickoff/tg"
+  {
+    printf 'export KICKOFF_CORE_DIR="%s"\n' "$2"
+    printf 'export KICKOFF_CORE_REMOTE="%s"\n' "$3"
+    printf 'export TELEGRAM_STATE_DIR="%s/.kickoff/tg"\n' "$1"
+    printf 'export MC_STATE_FILE="%s/.kickoff/state/mission-state.json"\n' "$1"
+    printf 'export MEMORY_DB="%s/.kickoff/memory/index.db"\n' "$1"
+    printf 'export MEMORY_HOOK_LOG="%s/.kickoff/memory/hook.log"\n' "$1"
+    printf 'export MODEL="stub-sonnet"\n'      # the durable per-adopter pair the hop must re-resolve
+    printf 'export EFFORT="xhigh"\n'
+  } > "$1/.kickoff/instance.env"
+  printf 'format 2\ntag core-vJ1\ncommit %s\n' "$4" > "$1/.kickoff/core.lock"
+  printf '{"entries": [], "machine_entries": []}\n' > "$1/.kickoff/adopt-manifest.json"
+  printf '# memory index stub\n' > "$1/.kickoff/memory/MEMORY.md"
+}
+
+write_worker_stub_claude() {   # $1 = dir — records every spawn (argv/env/cwd), then sleeps (never a real claude)
+  cat > "$1/claude" <<'EOF'
+#!/usr/bin/env bash
+d="${CLAUDE_PROBE_DIR:?stub-claude(worker): CLAUDE_PROBE_DIR unset — refusing (test isolation guard)}"
+n=1; while [ -e "$d/argv.$n" ]; do n=$((n+1)); done
+printf '%s\n' "$*" > "$d/argv.$n"
+env > "$d/env.$n" 2>/dev/null || true
+pwd > "$d/cwd.$n" 2>/dev/null || true
+exec sleep 600
+EOF
+  chmod +x "$1/claude"
+}
+
+run_upgrade_fixture() {   # $1 = green|red — spins the fixture + supervisor, runs THE pull, gathers evidence
+  local mode="$1" i
+  UJ_ORIGIN="$(mk)"; UJ_ENG="$(mk)/engine-n"; UJ_FIX="$(mk)/adopter"; UJ_VERS="$(mk)"
+  UJ_PROBE="$(mk)"; UJ_STUBDIR="$(mk)"; UJ_REG="$(mk)/adopters.json"
+  UJ_CFG="$(mk)"; UJ_MODELS="$(mk)"; UJ_LOG="$UJ_PROBE/supervisor.log"
+  UJ_TMP="$(mk)"   # the swept fixture-temp root — pinned as the supervisor's TMPDIR (see the spawn below)
+  build_upgrade_origin "$UJ_ORIGIN" "$mode"
+  git clone -q "$UJ_ORIGIN" "$UJ_ENG"; git -C "$UJ_ENG" checkout -q --detach core-vJ1
+  UJ_CN="$(git -C "$UJ_ENG" rev-parse HEAD)"
+  mkdir -p "$UJ_FIX"
+  build_upgrade_adopter "$UJ_FIX" "$UJ_ENG" "$UJ_ORIGIN" "$UJ_CN"
+  write_worker_stub_claude "$UJ_STUBDIR"
+  # the sibling row (pinned at N) that routes the pull onto the parked-worktree path
+  local dummy; dummy="$(mk)/sibling"; mkdir -p "$dummy"
+  python3 "$UJ_ENG/scripts/adopt-manifest.py" adopters-register --repo "$dummy" --tag core-vJ1 \
+    --version-dir "$UJ_ENG" --registry "$UJ_REG" >/dev/null 2>&1
+  # the REAL supervisor from engine N — default START_CMD (its own session-run.sh → the stub
+  # `claude` on PATH), REAL full-scope preflight, env -i scrubbed. MODEL/EFFORT here are the
+  # deliberate FOSSILS (≠ instance.env's stub-sonnet/xhigh): pre-hop they win (preset-wins,
+  # the production launch shape); post-hop the exec DROPS them, so a fossil surviving = RED.
+  # TMPDIR="$UJ_TMP" pins the fixture supervisor's (and its session-run grandchildren's) temp trees —
+  # the stub-claude pty/session scratch — INSIDE a swept mktemp dir, so cleanup's `rm -rf` reaps them.
+  # Without it, env -i scrubs TMPDIR → grandchildren default to /tmp/tmp.* and leak OUTSIDE the fixture
+  # tree even on a clean teardown (name-indistinguishable from another org's fixtures → uncleanable).
+  env -i PATH="$UJ_STUBDIR:$PATH" HOME="$HOME" TERM=dumb TMPDIR="$UJ_TMP" \
+    REPO_DIR="$UJ_FIX" KICKOFF_CORE_DIR="$UJ_ENG" \
+    POLL_SECONDS=1 RESTART_BACKOFF_SECONDS=1 BRIDGE_LIVENESS=0 BRIDGE_BOOT_GRACE_SECONDS=600 \
+    MAX_SESSION_SECONDS=0 PERMISSION_MODE=auto MODEL=fossil-model EFFORT=max \
+    CLAUDE_PROBE_DIR="$UJ_PROBE" \
+    bash "$UJ_ENG/scripts/supervisor.sh" > "$UJ_LOG" 2>&1 &
+  UJ_SUP=$!
+  printf '%s\n' "$UJ_SUP" >> "$JRNY_PIDS"
+  # bounded: our pid holds the lock AND the stub session's first spawn probe landed
+  i=0
+  while [ $i -lt 60 ]; do
+    [ "$(cat "$UJ_FIX/.kickoff/supervisor.lock" 2>/dev/null)" = "$UJ_SUP" ] && [ -f "$UJ_PROBE/argv.1" ] && break
+    kill -0 "$UJ_SUP" 2>/dev/null || break
+    i=$((i+1)); sleep 0.5
+  done
+  UJ_UP=0
+  [ "$(cat "$UJ_FIX/.kickoff/supervisor.lock" 2>/dev/null)" = "$UJ_SUP" ] && [ -f "$UJ_PROBE/argv.1" ] && UJ_UP=1
+  # capture the LAUNCH env (pre-hop) so the TMPDIR pin can be asserted on the real process — the
+  # grandchildren inherit it, so their temp trees land under the swept $UJ_TMP, never a leaked /tmp.*.
+  UJ_SUP_LAUNCH_ENV="$(tr '\0' '\n' < "/proc/$UJ_SUP/environ" 2>/dev/null || true)"
+  UJ_SESS1="$(cat "$UJ_FIX/.kickoff/supervisor.session.pid" 2>/dev/null || true)"
+  case "$UJ_SESS1" in ''|*[!0-9]*) UJ_SESS1="" ;; *) printf '%s\n' "$UJ_SESS1" >> "$JRNY_PIDS" ;; esac
+  UJ_SESS1_CMD=""
+  [ -n "$UJ_SESS1" ] && UJ_SESS1_CMD="$(tr '\0' ' ' < "/proc/$UJ_SESS1/cmdline" 2>/dev/null || true)"
+  # THE ONE COMMAND — the real pull, from inside the fixture, via the pinned engine's front door
+  UJ_PULL_RC=0
+  UJ_PULL_OUT="$(cd "$UJ_FIX" && env -u REPO_DIR REPO_DIR="$UJ_FIX" \
+      KICKOFF_ADOPTERS_REGISTRY="$UJ_REG" KICKOFF_VERSIONS_DIR="$UJ_VERS" \
+      CLAUDE_CONFIG_DIR="$UJ_CFG" KICKOFF_MODEL_DIR="$UJ_MODELS" \
+      PATH="$UJ_STUBDIR:$PATH" timeout 120 bash "$UJ_ENG/scripts/kickoff" pull core-vJ2 2>&1)" || UJ_PULL_RC=$?
+  UJ_NEWENG="$UJ_VERS/core-vJ2"
+  # bounded watch for the hop (green expects it; red must NOT see it — anchored on the
+  # POSITIVE respawn event argv.2 + a short post-respawn grace, never a blind sleep)
+  UJ_HOPPED=0; i=0
+  local grace=-1
+  while [ $i -lt 60 ]; do
+    if tr '\0' ' ' < "/proc/$UJ_SUP/cmdline" 2>/dev/null | grep -qF "$UJ_NEWENG/scripts/supervisor.sh"; then
+      UJ_HOPPED=1; break
+    fi
+    kill -0 "$UJ_SUP" 2>/dev/null || break
+    if [ "$mode" = red ] && [ -f "$UJ_PROBE/argv.2" ]; then
+      [ "$grace" -lt 0 ] && grace=$i
+      [ $((i - grace)) -ge 6 ] && break        # respawn seen + 6 ticks of grace → verdict: no hop
+    fi
+    i=$((i+1)); sleep 0.5
+  done
+  # bounded: the post-boundary session spawn probe (green: post-hop; red: the v0.6 plain refresh)
+  i=0
+  while [ $i -lt 40 ]; do
+    [ -f "$UJ_PROBE/argv.2" ] && break
+    kill -0 "$UJ_SUP" 2>/dev/null || break
+    i=$((i+1)); sleep 0.5
+  done
+  UJ_SESS2="$(cat "$UJ_FIX/.kickoff/supervisor.session.pid" 2>/dev/null || true)"
+  case "$UJ_SESS2" in ''|*[!0-9]*) UJ_SESS2="" ;; *) printf '%s\n' "$UJ_SESS2" >> "$JRNY_PIDS" ;; esac
+  UJ_SESS2_CMD=""
+  [ -n "$UJ_SESS2" ] && UJ_SESS2_CMD="$(tr '\0' ' ' < "/proc/$UJ_SESS2/cmdline" 2>/dev/null || true)"
+  UJ_SUP_ENV="$(tr '\0' '\n' < "/proc/$UJ_SUP/environ" 2>/dev/null || true)"
+  UJ_LOCK_AFTER="$(cat "$UJ_FIX/.kickoff/supervisor.lock" 2>/dev/null || true)"
+}
+
+teardown_upgrade_fixture() {   # TERM the exact fixture supervisor; its trap reaps its session group
+  [ -n "${UJ_SUP:-}" ] || return 0
+  kill -TERM "$UJ_SUP" 2>/dev/null || true
+  local i=0
+  while [ $i -lt 20 ]; do kill -0 "$UJ_SUP" 2>/dev/null || break; i=$((i+1)); sleep 0.5; done
+}
+
+run_upgrade_fixture green
+chk "fixture worker up on engine N: REAL supervisor holds the lock + REAL preflight PASSED at launch" \
+  "[ $UJ_UP -eq 1 ] && grep -q 'preflight PASSED' \"$UJ_LOG\""
+chk "hygiene: the fixture supervisor's TMPDIR was pinned into the swept fixture root (grandchild temp trees can't leak to /tmp)" \
+  "printf '%s\n' \"\$UJ_SUP_LAUNCH_ENV\" | grep -qF 'TMPDIR=$UJ_TMP'"
+chk "pre-hop stub session runs FROM engine N (session leader cmdline names its session-run.sh)" \
+  "printf '%s' \"\$UJ_SESS1_CMD\" | grep -qF \"$UJ_ENG/scripts/session-run.sh\""
+chk "pre-hop argv: launch-env presets win (--model fossil-model, --effort max) + --permission-mode auto" \
+  "grep -q -- '--model fossil-model' \"$UJ_PROBE/argv.1\" && grep -q -- '--effort max' \"$UJ_PROBE/argv.1\" && grep -q -- '--permission-mode auto' \"$UJ_PROBE/argv.1\""
+chk "THE pull exits 0 with the anchored 'PULL OK' verdict" \
+  "[ $UJ_PULL_RC -eq 0 ] && printf '%s' \"\$UJ_PULL_OUT\" | grep -Eq '^\[kickoff [^]]*\] PULL OK'"
+chk "the pull's honest bottom line: 'worker is hopping to core-vJ2 now' (live worker detected)" \
+  "printf '%s' \"\$UJ_PULL_OUT\" | grep -q 'worker is hopping to core-vJ2 now'"
+chk "the pull parked engine N+1 + persisted KICKOFF_CORE_DIR (instance.env names the worktree)" \
+  "grep -qF \"KICKOFF_CORE_DIR=\\\"$UJ_NEWENG\\\"\" \"$UJ_FIX/.kickoff/instance.env\""
+chk "instance.env MODEL/EFFORT lines byte-INTACT across the pull (the surgical persist)" \
+  "grep -q '^export MODEL=\"stub-sonnet\"$' \"$UJ_FIX/.kickoff/instance.env\" && grep -q '^export EFFORT=\"xhigh\"$' \"$UJ_FIX/.kickoff/instance.env\""
+chk "THE HOP: the SAME pid now executes engine N+1's supervisor.sh (flag touched → boundary → exec; no cadence + an immortal session means the flag is the ONLY boundary path)" \
+  "[ $UJ_HOPPED -eq 1 ]"
+chk "supervisor.lock pid UNCHANGED across the hop (exec semantics — no stop/start window)" \
+  "[ \"$UJ_LOCK_AFTER\" = \"$UJ_SUP\" ]"
+chk "the hop VERIFIED first: 'engine-hop: verified GREEN' + the REAL full gate PASSED on BOTH starts" \
+  "[ \"\$(grep -c 'engine-hop: verified GREEN' \"$UJ_LOG\")\" = 1 ] && [ \"\$(grep -c 'preflight PASSED' \"$UJ_LOG\")\" = 2 ]"
+chk "ACCEPTANCE: the stub session RESPAWNED FROM THE N+1 ENGINE DIR (leader cmdline names its session-run.sh)" \
+  "printf '%s' \"\$UJ_SESS2_CMD\" | grep -qF \"$UJ_NEWENG/scripts/session-run.sh\""
+chk "ACCEPTANCE: PERMISSION_MODE=auto UNCHANGED through the hop (kernel-held grant → session argv)" \
+  "printf '%s\n' \"\$UJ_SUP_ENV\" | grep -q '^PERMISSION_MODE=auto$' && grep -q -- '--permission-mode auto' \"$UJ_PROBE/argv.2\""
+chk "ACCEPTANCE: MODEL/EFFORT RE-RESOLVED from instance.env, not fossil env (--model stub-sonnet, --effort xhigh)" \
+  "grep -q -- '--model stub-sonnet' \"$UJ_PROBE/argv.2\" && grep -q -- '--effort xhigh' \"$UJ_PROBE/argv.2\""
+chk "the fossil MODEL/EFFORT were DROPPED from the live supervisor env at the exec" \
+  "! printf '%s\n' \"\$UJ_SUP_ENV\" | grep -q '^MODEL=' && ! printf '%s\n' \"\$UJ_SUP_ENV\" | grep -q '^EFFORT='"
+teardown_upgrade_fixture
+chk "fixture supervisor torn down clean (exact pid, TERM only)" \
+  "! kill -0 $UJ_SUP 2>/dev/null"
+
+# ══════════════════════════════════════════════════════════════════════════════════════
+stage "(6d) UPGRADE-HOP RED-FIRST — a core-v0.6 supervisor (no hop unit) provably NEVER hops"
+# ══════════════════════════════════════════════════════════════════════════════════════
+# The honest asterisk design §3 names: a v0.6 adopter's RUNNING supervisor has no hop-watch, so
+# the auto-cycle can't fire on the v0.6→v0.7 hop (that one is manual: the adopter one-taps).
+# Same lane, but engine N's supervisor.sh is the REAL core-v0.6 one (git show, read-only): the
+# pull still lands green and touches the flag, the v0.6 supervisor consumes it as a PLAIN refresh
+# — and the session respawns from the OLD engine, no hop ever fires. This is the lane's RED-first
+# proof: run against a non-hopping supervisor, the (6c) hop assertions genuinely FAIL — so the
+# lane detects exactly the rot class it exists to kill.
+run_upgrade_fixture red
+chk "RED fixture is honest: engine N's supervisor.sh is BYTE-IDENTICAL to core-v0.6's (git show)" \
+  "git -C \"$REPO\" show core-v0.6:scripts/supervisor.sh | cmp -s - \"$UJ_ENG/scripts/supervisor.sh\""
+chk "RED: the v0.6 supervisor came up + ran its stub session from engine N" \
+  "[ $UJ_UP -eq 1 ] && printf '%s' \"\$UJ_SESS1_CMD\" | grep -qF \"$UJ_ENG/scripts/session-run.sh\""
+chk "RED: the cross-version pull itself still lands green (PULL OK — the pin advanced)" \
+  "[ $UJ_PULL_RC -eq 0 ] && printf '%s' \"\$UJ_PULL_OUT\" | grep -Eq '^\[kickoff [^]]*\] PULL OK'"
+chk "RED: the flag WAS consumed — the v0.6 supervisor refreshed (a second stub session spawned)" \
+  "[ -f \"$UJ_PROBE/argv.2\" ]"
+chk "RED-FIRST PROVEN: NO hop ever fires — the SAME pid still executes the OLD (v0.6) supervisor.sh" \
+  "[ $UJ_HOPPED -eq 0 ] && tr '\0' ' ' < \"/proc/$UJ_SUP/cmdline\" | grep -qF \"$UJ_ENG/scripts/supervisor.sh\""
+chk "RED-FIRST PROVEN: the respawned session still runs OLD-engine code (the exact rot the hop kills)" \
+  "printf '%s' \"\$UJ_SESS2_CMD\" | grep -qF \"$UJ_ENG/scripts/session-run.sh\" && ! grep -q 'engine-hop' \"$UJ_LOG\""
+teardown_upgrade_fixture
+chk "RED fixture supervisor torn down clean (exact pid, TERM only)" \
+  "! kill -0 $UJ_SUP 2>/dev/null"
+
+# ══════════════════════════════════════════════════════════════════════════════════════
 stage "(7) EJECT (default keep, --verify) — byte-restore + SKILL-AUTHORED deliverables SURVIVE"
 # ══════════════════════════════════════════════════════════════════════════════════════
 # The acceptance test for the WHOLE journey: eject reverses adopt+pull+/adopt. settings.json + CLAUDE.md
@@ -737,7 +1016,7 @@ stage "(8) PRISTINE — a fresh adoption fully PURGED → \`git status --porcela
 PFIX="$(mk)/pristine-app"
 build_brownfield_fixture "$PFIX"
 PBASE="$(git -C "$PFIX" rev-parse HEAD)"
-KF_REPO="$PFIX"; kf adopt --dir "$PFIX" >/dev/null 2>&1
+KF_REPO="$PFIX"; kf adopt --dir "$PFIX" --accept </dev/null >/dev/null 2>&1
 write_fixture_instance_env "$PFIX"
 simulate_adopt_session "$PFIX"
 KF_REPO="$PFIX"
@@ -762,7 +1041,7 @@ stage "(9) COMMITTED-seams — committed CREATED seams eject to ' D' deletions c
 # the CREATED seams the design's §G note names, and leave CLAUDE.md/settings.json uncommitted.)
 CFIX="$(mk)/committed-app"
 build_brownfield_fixture "$CFIX"
-KF_REPO="$CFIX"; kf adopt --dir "$CFIX" >/dev/null 2>&1
+KF_REPO="$CFIX"; kf adopt --dir "$CFIX" --accept </dev/null >/dev/null 2>&1
 write_fixture_instance_env "$CFIX"
 simulate_adopt_session "$CFIX"
 git -C "$CFIX" add .kickoff/bin .kickoff/.gitignore .kickoff/KICKOFF.md 2>/dev/null
@@ -786,7 +1065,7 @@ stage "(10) RESIDUE — a planted \`kickoff@kickoff-local\` marker eject can't a
 # scan must catch it and exit NON-ZERO, never falsely report 'no trace'.
 RFIX="$(mk)/residue-app"
 build_brownfield_fixture "$RFIX"
-KF_REPO="$RFIX"; kf adopt --dir "$RFIX" >/dev/null 2>&1
+KF_REPO="$RFIX"; kf adopt --dir "$RFIX" --accept </dev/null >/dev/null 2>&1
 write_fixture_instance_env "$RFIX"
 simulate_adopt_session "$RFIX"
 printf '\n// leftover: kickoff@kickoff-local (a hand-copied ref eject cannot reverse)\n' >> "$RFIX/src/index.js"
@@ -812,7 +1091,7 @@ printf 'node_modules/\n' > "$GF/.gitignore"
 git -C "$GF" add -A; git -C "$GF" commit -qm "scaffold: green-app baseline" >/dev/null
 GBASE="$(git -C "$GF" rev-parse HEAD)"
 KF_REPO="$GF"
-GADOPT_OUT="$(kfl adopt --dir "$GF" 2>&1)"; GADOPT_RC=$?     # via the SYMLINK
+GADOPT_OUT="$(kfl adopt --dir "$GF" --accept </dev/null 2>&1)"; GADOPT_RC=$?     # via the SYMLINK; --accept: §4 scripted consent
 write_fixture_instance_env "$GF"
 simulate_adopt_session "$GF"
 chk "greenfield adopt via the SYMLINKED front door exits 0 (readlink -f \$0 resolved the real engine)" \
@@ -850,6 +1129,24 @@ chk "CANARY: the live repo's .kickoff/adopt-manifest.json is byte-identical (nev
   "[ \"$LIVE_KICKOFF_DIR_BEFORE\" = \"$(canary_hash "$REPO/.kickoff/adopt-manifest.json")\" ]"
 chk "CANARY: this repo's own working-tree status is unchanged (the journey wrote only to scratch)" \
   "[ \"$LIVE_REPO_STATUS_BEFORE\" = \"\$(git -C \"$REPO\" status --porcelain 2>/dev/null | sha256sum | awk '{print \$1}')\" ]"
+
+# ══════════════════════════════════════════════════════════════════════════════════════
+stage "(13) SUITE HYGIENE — no fixture supervisor/session this journey spawned outlives the run"
+# ══════════════════════════════════════════════════════════════════════════════════════
+# The (6c/6d) fixture supervisors + their stub sessions are torn down inline (teardown_upgrade_fixture);
+# the EXIT trap is the safety net. Assert here (before the trap fires) that the suite's OWN teardown
+# already left nothing alive — a skipped teardown or a leaked session fails LOUD. Scoped to THIS run's
+# exact recorded pids (kill -0), never a `ps|grep` pattern that would catch another org's live worker.
+JRNY_LEAK=""
+if [ -f "$JRNY_PIDS" ]; then
+  while IFS= read -r _p; do
+    case "$_p" in ''|*[!0-9]*) continue ;; esac
+    kill -0 "$_p" 2>/dev/null && JRNY_LEAK="$JRNY_LEAK $_p"
+  done < "$JRNY_PIDS"
+fi
+chk "no fixture supervisor/session this journey spawned is still alive (all recorded pids reaped)" \
+  "[ -z \"$JRNY_LEAK\" ]"
+[ -n "$JRNY_LEAK" ] && printf '  ── leaked fixture pids (should be empty):%s\n' "$JRNY_LEAK"
 
 echo
 echo "════════════════════════════════════════════════════════════════════"

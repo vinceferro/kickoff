@@ -12,8 +12,8 @@
 # Each app must OWN its base path (/<project>/<app>) via env — no hardcoded "/". Caddy shapes the
 # ingress; the app honours the path. Single owner of the tailscale config → no "caddies fighting".
 #
-#   Funnel :443 → Caddy 127.0.0.1:9000 →  /bliz/api  /bliz/app  /bliz/pay   (reverse_proxy)
-#                                         /beauty/web                        (static web export)
+#   Funnel :443 → Caddy 127.0.0.1:9000 →  /app/api  /app/web  /app/pay   (reverse_proxy)
+#                                         /shop/web                          (static web export)
 #   Public: https://<host>.ts.net/<project>/<app>
 #
 # Usage:
@@ -175,7 +175,13 @@ gen() {
     # Fix 8c-bind — bind LOOPBACK (127.0.0.1:<listen>), NOT a bare :<listen> wildcard. A wildcard
     # bind is LAN-reachable, so "tailnet-private" is a lie until the listener is loopback. Funnel and
     # `tailscale serve` proxy to 127.0.0.1:<listen> fine, so the public path is unaffected.
-    echo "127.0.0.1:$listen {"
+    # Fix scheme-explicit (v0.39, bit live 2026-08-22): a BARE address (`127.0.0.1:9000`) makes
+    # caddy ≥2.11 emit an empty tls_connection_policies entry even with auto_https off — which
+    # turns the listener TLS-ONLY, so Funnel's plaintext forward gets Go's "Client sent an HTTP
+    # request to an HTTPS server" 400 on EVERY route (all previews down overnight). An explicit
+    # http:// scheme pins the adapter: no policy, plaintext listener, exactly what the comment
+    # above promises. Older binaries tolerated the bare form; the upgrade silently flipped it.
+    echo "http://127.0.0.1:$listen {"
     echo "    encode gzip"
     echo "    # Kill stale HTML/bfcache on dev/demo serving, but KEEP the immutable"
     echo "    # _next/static + /static chunks cacheable — no-store on those breaks Next.js."
@@ -346,7 +352,7 @@ remove() {
 
 # health — curl every PROXY upstream and check every STATIC root dir exists. Prints up/down per app;
 # exits nonzero if ANY app is down. (Fix 8c-health: the preview skill refuses to hand over a URL when
-# an upstream is down — e.g. /bliz/dashboard 502s when its Next.js server isn't up.)
+# an upstream is down — e.g. /app/dashboard 502s when its Next.js server isn't up.)
 health() {
   local down=0 n=0
   while IFS=$'\t' read -r proj app type target; do

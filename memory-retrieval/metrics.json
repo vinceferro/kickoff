@@ -1,0 +1,20 @@
+{
+  "recall_at_1": 0.85,
+  "recall_at_3": 0.9,
+  "recall_at_5": 0.95,
+  "mrr": 0.8766666666666666,
+  "noise_pass": 4,
+  "noise_total": 4,
+  "corpus_size": 79,
+  "eval_case_count": 24,
+  "embedder": "local:Xenova/all-MiniLM-L6-v2",
+  "config": "hybrid",
+  "baseline_keyword": {
+    "recall_at_1": 0.65,
+    "recall_at_3": 0.9,
+    "recall_at_5": 0.9,
+    "mrr": 0.7666666666666667
+  },
+  "measured_at": "2026-07-07T09:34:08.075Z",
+  "git_sha": "29ce177"
+}

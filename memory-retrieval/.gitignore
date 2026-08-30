@@ -1,0 +1,17 @@
+# Derived, re-buildable index cache — never the source of truth. Rebuild with
+# ./run.sh index. Not committed.
+memory-index.db
+memory-index.db-*
+
+# Live retrieval log written by the hook (runtime data, not source). Summarize
+# with ./run.sh log-stats.
+retrieval-log.jsonl
+
+# Tool-local deps (the transformers.js local embedder). Installed via
+# `pnpm install --ignore-workspace` here; not committed, re-installable.
+# package-lock.json too: install-model.mjs's npm fallback runs --no-package-lock,
+# but a hand-run `npm install` must ALSO never dirty a READ-ONLY pulled core
+# clone (the next `kickoff pull` refuses a dirty tree).
+node_modules
+pnpm-lock.yaml
+package-lock.json

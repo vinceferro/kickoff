@@ -1,0 +1,40 @@
+{
+  "_about": "TEMPLATE eval set — copy this to `eval-set.json` and replace the cases with ones written against YOUR memory/ corpus. Each case is a realistic DECISION-TIME query an agent would actually face, paired with the ONE memory slug (the .md filename without extension) that SHOULD be recalled. RULE: write the query in DIFFERENT words than the target memory — paraphrase it — so the eval tests real recall, not lexical echo (that paraphrase gap is exactly what the semantic/vector arm is for). Add a few NOISE cases (`expect: null`) — off-domain questions the relevance cutoff must SUPPRESS (surface nothing). Run: ./run.sh eval. The examples below are written against the kickoff `memory/` corpus as a starting point — keep the ones that match your files, edit the rest.",
+  "cases": [
+    {
+      "query": "I'm about to deploy code that reads a new database column, what order do I do things in",
+      "expect": "activation-runs-before-code-and-fails-closed",
+      "note": "Recall migrate-before-code / fail-closed / dependency-before-consumer cutover discipline."
+    },
+    {
+      "query": "I finished building this feature, is a self-review enough before merging",
+      "expect": "adversarial-review-catches-what-the-builder-misses",
+      "note": "Recall the build -> adversarial-review -> fix -> re-review pattern (a fresh reviewer breaks it)."
+    },
+    {
+      "query": "should I kill all the node processes to clean up",
+      "expect": "dont-broad-pkill-shared-services",
+      "note": "Recall: a broad pkill takes out shared services other work depends on."
+    },
+    {
+      "query": "how should the agent remember lessons across sessions",
+      "expect": "memory-system-files-as-truth-plus-retrieval",
+      "note": "Recall: markdown files are the truth, the index is a derived cache + retrieval layer."
+    },
+    {
+      "query": "what's a good recipe for sourdough bread",
+      "expect": null,
+      "note": "NOISE — totally off-domain; the cutoff must suppress (surface nothing)."
+    },
+    {
+      "query": "what is the weather forecast for tomorrow afternoon",
+      "expect": null,
+      "note": "NOISE — no corpus overlap; cutoff must suppress."
+    },
+    {
+      "query": "asdf qwerty zxcvb foobar baz",
+      "expect": null,
+      "note": "NOISE — gibberish; cutoff must suppress."
+    }
+  ]
+}

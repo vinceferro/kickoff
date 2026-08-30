@@ -16,7 +16,15 @@
 //   ... | node scripts/secret-decrypt.mjs                     # payload from stdin
 //   node scripts/secret-decrypt.mjs payload.json --write-env .env --key SUPABASE_KEY   # upsert into .env
 // Options:
-//   --priv <path>       private key (default ~/.kickoff/secret-box/private.pem)
+//   --priv <path>       private key (explicit override; default <keydir>/private.pem)
+//   --keydir <path>     the box keydir. The RESOLUTION ORDER is defined once, in
+//                       scripts/secret-keydir.mjs, and imported here and by
+//                       secret-box-keygen.mjs — read it there. Restating it in a comment is
+//                       how the two copies drifted apart last time, and a keydir divergence
+//                       fails GREEN (the panel encrypts to key A, this decrypts with key B).
+//                       Exit 2 = bad KICKOFF_PUBKEY; exit 4 = ambiguous keydir (the derived
+//                       one is empty while the machine-wide one holds a key) — resolved by the
+//                       operator, never by a silent fallback.
 //   --write-env <path>  upsert KEY=plaintext into this file (mode 0600) instead of printing
 //   --key <NAME>        the env var name to write (required with --write-env)
 //   --allow <A,B,...>   CLOSED allow-list of permitted --key names (M2). Also read
@@ -33,15 +41,17 @@
 import { webcrypto as wc } from "node:crypto";
 import { readFile, writeFile, chmod, stat, unlink } from "node:fs/promises";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join, dirname, resolve } from "node:path";
+import {
+  resolveKeydir, assertResolvable, assertNoLegacyAmbiguity, privPathIn,
+} from "./secret-keydir.mjs";
 
 const ALG = "RSA-OAEP-SHA256+AES-256-GCM";
 const INPUT_CAP = 64 * 1024;   // L3 — bound stdin/file so a huge input can't OOM the box
 
 const argv = process.argv.slice(2);
 const flags = {
-  "--priv": undefined, "--write-env": undefined, "--key": undefined,
+  "--priv": undefined, "--keydir": undefined, "--write-env": undefined, "--key": undefined,
   "--allow": undefined, "--allow-file": undefined, "--env-path": undefined,
 };
 const boolFlags = new Set(["--keep"]);
@@ -52,7 +62,15 @@ for (let i = 0; i < argv.length; i++) {
   else if (Object.prototype.hasOwnProperty.call(flags, argv[i])) { flags[argv[i]] = argv[++i]; }
   else { positionals.push(argv[i]); }
 }
-const privPath = flags["--priv"] || join(homedir(), ".kickoff", "secret-box", "private.pem");
+// --priv names the key FILE and wins outright; otherwise the key is <resolved keydir>/private.pem.
+// Everything else keydir-scoped (allowed-keys.json, below) hangs off dirname(privPath), so an
+// explicit --priv keeps carrying its whole neighbourhood with it, as it always did.
+let privPath = flags["--priv"];
+if (!privPath) {
+  const resolvedKeydir = assertResolvable(resolveKeydir(flags["--keydir"]));
+  assertNoLegacyAmbiguity(resolvedKeydir);
+  privPath = privPathIn(resolvedKeydir.keydir);
+}
 const envFile = flags["--write-env"];
 const envKey = flags["--key"];
 const payloadArg = positionals[0];

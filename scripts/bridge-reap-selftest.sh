@@ -177,7 +177,7 @@ if ! kill -0 "$P8" 2>/dev/null; then ok "same stub reaped once re-enabled (defau
 
 section "T9 — session-run.sh wiring (source + call between the pty-wrap and exec claude)"
 grep -q 'bridge-reap\.sh' "$SESSION_RUN" && ok "session-run.sh sources bridge-reap.sh" || bad "no bridge-reap.sh source in session-run.sh"
-PTY_LN="$(grep -n '_PTY_WRAPPED=1 exec bash' "$SESSION_RUN" | head -1 | cut -d: -f1)"
+PTY_LN="$(grep -n 'exec script -qfe -c' "$SESSION_RUN" | head -1 | cut -d: -f1)"
 CALL_LN="$(grep -n '^reap_stale_bridge' "$SESSION_RUN" | head -1 | cut -d: -f1)"
 EXEC_LN="$(grep -n '^exec claude' "$SESSION_RUN" | head -1 | cut -d: -f1)"
 if [ -n "$PTY_LN" ] && [ -n "$CALL_LN" ] && [ -n "$EXEC_LN" ] && [ "$PTY_LN" -lt "$CALL_LN" ] && [ "$CALL_LN" -lt "$EXEC_LN" ]; then

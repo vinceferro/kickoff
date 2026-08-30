@@ -121,15 +121,17 @@ _resolve_in_repo() {
 # any non-whitelisted / launch-control var (PREFLIGHT_SKIP, DRY_RUN, …) set inside the
 # file dies with the subshell and never reaches the checks. (REPO_DIR is intentionally
 # NOT re-imported: it is the instance identity, resolved authoritatively above; config
-# does not redefine it.)
+# does not redefine it. PERMISSION_MODE is intentionally NOT imported either — v0.7 G1
+# §2.3: the autonomy grant flows argv / terminal env ONLY, never a gitignored file.)
 INSTANCE_ENV_WHITELIST=(
   KICKOFF_CORE_DIR
   MC_STATE_FILE MC_TRACKER_FILE
   MEMORY_DB MEMORY_HOOK_LOG MEMORY_DIR MEMORY_INDEX
   TELEGRAM_STATE_DIR CHANNEL_SPEC
   REGROUND_PROMPT
-  PERMISSION_MODE EFFORT MAX_CONCURRENT_AGENTS
+  MODEL EFFORT MAX_CONCURRENT_AGENTS
   DEPLOY_BRANCH CADENCE
+  WORKER_ENGINE OPENCODE_MODEL_PROVIDER OPENCODE_MODEL_ID
 )
 # A whitelisted var ALREADY set in the environment is a PRE-SET value from the TRUSTED launcher
 # (env/argv), and it WINS over the gitignored instance.env — exactly the contract the front door's
@@ -139,8 +141,25 @@ INSTANCE_ENV_WHITELIST=(
 # running-vs-pinned assertion (#14) would false-fail a legitimate worktree pull. Captured BEFORE
 # the #1 import overwrites anything. (No security loss: the environment is set by the trusted
 # launcher, not the untrusted instance.env; #6 stays fail-closed regardless.)
+# TELEGRAM_STATE_DIR is the ONE whitelisted name EXEMPT from pre-set-wins — it is the READER half
+# of the core-v0.27 cross-wire (whose WRITER half was cmd_pull/cmd_adopt stamping the caller's
+# channel onto the adoptee's row). The pre-set-wins premise is "the environment was set by the
+# trusted launcher FOR THIS REPO"; that premise holds for KICKOFF_CORE_DIR (the parked-worktree
+# case it was written for) and FAILS for the channel: a `kickoff pull`/preflight for repo B run
+# from INSIDE repo A's worker session carries A's channel ambiently, and honoring it makes #2
+# evaluate A's channel as if it were B's — reporting A's dir as B's worker channel and then
+# FAILING "channel clash" against A itself. A phantom clash, and fail-closed, so it blocks B's
+# pull and A's engine hop on a box where no clash exists. The repo's OWN instance.env is the only
+# authority on the repo's OWN channel — the same pinning `_channel_of_repo` (kickoff:294) applies
+# on the writer side. When instance.env does NOT define a channel, nothing is emitted and the
+# ambient value still stands: that is the best available answer, not a leak.
+_PREFLIGHT_PRESET_EXEMPT=(TELEGRAM_STATE_DIR)
+# space-delimited mirror of the array, for a `case` membership test (this file's idiom) that
+# cannot fall through to a non-zero status the way a nested loop's last failed `[ ]` would.
+printf -v _PRESET_EXEMPT_SET ' %s ' "${_PREFLIGHT_PRESET_EXEMPT[@]}"
 declare -A _PREFLIGHT_PRESET=()
 for _pn in "${INSTANCE_ENV_WHITELIST[@]}"; do
+  case "$_PRESET_EXEMPT_SET" in *" $_pn "*) continue ;; esac
   [ -n "${!_pn+x}" ] && _PREFLIGHT_PRESET["$_pn"]=1
 done
 _import_instance_env() {
@@ -148,6 +167,12 @@ _import_instance_env() {
   # in the config resolves into the ADOPTER's repo, not wherever the preflight was run.
   (
     cd "$REPO_DIR" 2>/dev/null || true
+    # Exempting TELEGRAM_STATE_DIR from pre-set-wins (above) is only HALF the fix: adopters ship the
+    # self-defaulting `export TELEGRAM_STATE_DIR="${TELEGRAM_STATE_DIR:-…}"` form that
+    # instance.env.example seeds, so an ambient value survives a plain source and the repo's own
+    # default never fires. Unset it here so the `:-` default resolves to THIS repo's channel —
+    # the same reason the unset is load-bearing inside `_channel_of_repo`.
+    unset "${_PREFLIGHT_PRESET_EXEMPT[@]}"
     set +u
     # shellcheck disable=SC1090
     . "$1" >/dev/null 2>&1
@@ -309,11 +334,30 @@ if [ -n "${TELEGRAM_STATE_DIR:-}" ]; then
 fi
 fi
 
+# ── 2b. worker engine (the opencode seam — only when WORKER_ENGINE names one) ─
+# Fail-closed BEFORE boot, not mid-launch: an unknown engine name or a missing
+# binary must stop the supervisor HERE. A config fatal inside session-run.sh instead
+# becomes a supervisor restart loop — exactly the crash-loop the guards exist to prevent.
+_we_engine="${WORKER_ENGINE:-}"
+case "$_we_engine" in
+  ""|claude) : ;;   # default path — nothing to verify
+  opencode)
+    if ! command -v opencode >/dev/null 2>&1; then
+      fail "WORKER_ENGINE=opencode but no 'opencode' binary on PATH — install it or unset WORKER_ENGINE in $INSTANCE_ENV"
+    fi
+    if ! command -v opencode-telegram >/dev/null 2>&1; then
+      fail "WORKER_ENGINE=opencode but 'opencode-telegram' is not installed — npm install -g --prefix ~/.local @grinev/opencode-telegram-bot"
+    fi
+    ;;
+  *)
+    fail "WORKER_ENGINE='$_we_engine' is not a supported engine (claude|opencode) — fix it in $INSTANCE_ENV" ;;
+esac
+
 # ── 3. memory index resolves ─────────────────────────────────────────────────
 # HARD: the re-ground prompt points the worker here first; a dangling index means
 # a worker that can't re-ground. Resolution CHAIN (§D): an explicit MEMORY_INDEX wins;
 # else the adopter corpus `.kickoff/memory/MEMORY.md` when present; else the repo-root
-# `memory/MEMORY.md` (keeps kickoff-itself + Bliz green — they carry their corpus at
+# `memory/MEMORY.md` (keeps kickoff-itself + repo-root adopters green — they carry their corpus at
 # repo-root memory/ via their own instance.env/defaults). Resolve relative to REPO_DIR
 # when not absolute.
 if [ "$PREFLIGHT_SCOPE" = full ]; then
@@ -332,6 +376,34 @@ if [ -f "$mem_path" ] && [ -r "$mem_path" ]; then
   ok "memory index resolves and is readable ($mem_path)"
 else
   fail "memory index is not a readable file: $mem_path  (MEMORY_INDEX=${MEMORY_INDEX:-<unset>}) — \`kickoff init\`/\`adopt\` seeds the .kickoff/memory/MEMORY.md stub"
+fi
+fi
+
+# ── 3b. memory RETRIEVAL index built (SOFT — warn only, never fail) ──────────
+# #3 checks the human-curated MEMORY.md index; the proactive recall hook additionally reads a
+# DERIVED SQLite index (MEMORY_DB) built from the corpus (MEMORY_DIR). `kickoff adopt` now builds
+# it once, but an adopt that ran node-less (or on an older core) leaves the corpus present and the
+# DB absent — and recall then silently no-ops FOREVER (the first-adopter shape: wired, never fired).
+# LOUD warn, NEVER a fail: keyword-grep over the .md files still works, and a legit node-less
+# adopt must not brick `kickoff up` (this runs at every supervisor start). Skipped when either
+# path is unset (kickoff-origin / a pre-corpus instance — nothing coherent to assert).
+if [ "$PREFLIGHT_SCOPE" = full ]; then
+if [ -n "${MEMORY_DIR:-}" ] && [ -n "${MEMORY_DB:-}" ]; then
+  case "$MEMORY_DIR" in /*) _ri_dir="$MEMORY_DIR" ;; *) _ri_dir="$REPO_DIR/$MEMORY_DIR" ;; esac
+  case "$MEMORY_DB"  in /*) _ri_db="$MEMORY_DB"  ;; *) _ri_db="$REPO_DIR/$MEMORY_DB"  ;; esac
+  _ri_has_md=0
+  if [ -d "$_ri_dir" ]; then
+    for _ri_f in "$_ri_dir"/*.md; do [ -e "$_ri_f" ] && { _ri_has_md=1; break; }; done
+  fi
+  if [ "$_ri_has_md" = 1 ] && [ ! -f "$_ri_db" ]; then
+    warn "memory corpus present ($_ri_dir has .md facts) but NEVER indexed ($_ri_db absent) — proactive recall is INERT; re-run \`kickoff adopt\` (it builds the index) or by hand: MEMORY_DIR=$_ri_dir MEMORY_DB=$_ri_db node --experimental-sqlite \$KICKOFF_CORE_DIR/memory-retrieval/index.mjs → run \`kickoff doctor\` to back-fill."
+  elif [ "$_ri_has_md" = 1 ]; then
+    ok "memory retrieval index present ($_ri_db) — proactive recall has an index to read"
+  else
+    ok "no memory corpus .md files yet ($_ri_dir) — retrieval-index check skipped"
+  fi
+else
+  ok "MEMORY_DIR/MEMORY_DB not both configured — retrieval-index check skipped (origin / pre-corpus instance)"
 fi
 fi
 
@@ -442,6 +514,26 @@ if [ -f "$CORE_LOCK" ]; then
         "commit "*) lock_commit="${cl_line#commit }" ;;
       esac
     done < "$CORE_LOCK"
+    # PARITY WITH _eitp (scripts/kickoff), which has done both of these since v0.26. This site had
+    # neither, and the sibling drift is exactly what this release is about.
+    #  · TRIM — a lock written on a CRLF machine, or hand-edited with a trailing space, carries the
+    #    whitespace into the value; `refs/tags/core-v0.30\r` resolves to nothing, so a REAL pin
+    #    would read as an absent tag and fail closed on a healthy adopter.
+    #  · RENDER SAFE for printing — these values come from a file this engine did not write and are
+    #    interpolated straight into operator-facing check lines. ESC sequences can repaint the line,
+    #    and a lock carrying `✓ the pin HOLDS` forges a tick inside a refusal. The lookup keeps the
+    #    real (trimmed) value; only what is PRINTED is reduced.
+    while [ "$lock_tag" != "${lock_tag%[[:space:]]}" ]; do lock_tag="${lock_tag%[[:space:]]}"; done
+    while [ "$lock_commit" != "${lock_commit%[[:space:]]}" ]; do lock_commit="${lock_commit%[[:space:]]}"; done
+    _pin_safe() {   # mirrors _eitp_safe: cap, reduce to a real tag/sha charset, never lead with `-`
+      local _s="${1:-}"
+      _s="${_s:0:80}"
+      _s="${_s//[![:alnum:]._\/+-]/?}"
+      case "$_s" in -*) _s="?${_s#?}" ;; esac
+      printf '%s' "$_s"
+    }
+    lock_tag_s="$(_pin_safe "$lock_tag")"
+    lock_commit_s="$(_pin_safe "$lock_commit")"
     if ! command -v git >/dev/null 2>&1; then
       fail "core.lock (format 2) present but git unavailable — cannot verify the whole-tree core pin (fail-closed)"
     elif [ -z "$lock_commit" ] || [ -z "$lock_tag" ]; then
@@ -452,15 +544,28 @@ if [ -f "$CORE_LOCK" ]; then
       pin_ok=1
       if [ "$head_commit" != "$lock_commit" ]; then
         pin_ok=0
-        fail "core pin MISMATCH — the checkout at $core_base is commit ${head_commit:0:12}… but core.lock pins ${lock_commit:0:12}… (tag $lock_tag). Run \`kickoff pull $lock_tag\` to re-pin, or check out the pinned commit."
+        fail "core pin MISMATCH — the checkout at $core_base is commit ${head_commit:0:12}… but core.lock pins ${lock_commit_s:0:12}… (tag $lock_tag_s). Run \`kickoff pull $lock_tag_s\` to re-pin, or check out the pinned commit."
       fi
-      tag_commit="$(git -C "$core_base" rev-parse "$lock_tag^{commit}" 2>/dev/null || true)"
+      # `-q --verify` and the refs/tags/ scope are load-bearing, not style — this is the SAME pair
+      # the engine-identity predicate already carries (scripts/kickoff, _eitp), and this site is
+      # where it was missing. Two distinct defects, both observed:
+      #   · a PLAIN `git rev-parse <unknown>^{commit}` ECHOES ITS ARGUMENT on stdout and exits
+      #     non-zero, so with `2>/dev/null || true` an ABSENT tag captures the literal
+      #     "core-vX^{commit}" — non-empty, so it SAILS PAST the emptiness arm below and lands in
+      #     the "tag MOVED" arm: a definite-sounding wrong diagnosis ("a re-tagged release") whose
+      #     remediation cannot work, because the tag it says to re-pull does not exist. Fired live
+      #     2026-08-12 on a pin written ahead of its release.
+      #   · a bare `<value>^{commit}` resolves ANY revision, not a tag — so `tag HEAD`,
+      #     `tag <the pinned sha>` and `tag <a branch>` each RESOLVE and tick a clause that then
+      #     certifies nothing (HEAD^{commit} == HEAD by definition, a sha resolves to itself), while
+      #     telling the operator a tag was checked. Only refs/tags/ makes the clause mean what it says.
+      tag_commit="$(git -C "$core_base" rev-parse -q --verify "refs/tags/$lock_tag^{commit}" 2>/dev/null || true)"
       if [ -z "$tag_commit" ]; then
         pin_ok=0
-        fail "core.lock pins tag $lock_tag but it does not resolve in $core_base — a moved/absent tag; re-run \`kickoff pull\`"
+        fail "core.lock pins tag $lock_tag_s but no such TAG resolves in $core_base — only refs/tags/ is consulted, so an absent/never-created tag (or a branch name, HEAD, or a raw commit id in that line) lands here; re-run \`kickoff pull\`"
       elif [ "$tag_commit" != "$lock_commit" ]; then
         pin_ok=0
-        fail "core.lock tag $lock_tag now resolves to ${tag_commit:0:12}… but the lock pins ${lock_commit:0:12}… — the tag MOVED since the pull (a re-tagged release); re-run \`kickoff pull $lock_tag\` after reviewing the change."
+        fail "core.lock tag $lock_tag_s now resolves to ${tag_commit:0:12}… but the lock pins ${lock_commit_s:0:12}… — the tag MOVED since the pull (a re-tagged release); re-run \`kickoff pull $lock_tag_s\` after reviewing the change."
       fi
       # CLEAN tree — SCOPED to the clone dir only (git -C the clone; a parked worktree lives OUTSIDE
       # it, so it is never conflated in). A dirty tree is a copied-and-patched core → fail.
@@ -719,6 +824,81 @@ PYEOF
   fi
 else
   ok "not an adopter (no core.lock; core runs from inside the repo) — adopt-manifest seam check skipped"
+fi
+
+# ── 9. adopt-completeness (SOFT — a LOUD warn, NEVER a fail) ─────────────────
+# The a real adopter shape: mechanical seams present, the /adopt session never ran, gates WHOLLY
+# unwired — and commits land unscanned while everything still reports green. Distinguish it from
+# a LEGIT fresh adopt (a valid, startup-safe state — nothing is flowing through the repo yet) by
+# the ACTIVITY signals: commits STRICTLY newer than the adopt manifest (second-resolution %ct
+# compare, so a same-second adopt-after-baseline never false-fires) or board activity entries.
+# (A live supervisor is NOT probed here — preflight runs BEFORE the supervisor takes its lock;
+# a genuinely competing one is #4's hard business.) warn() ONLY, by design: this runs at EVERY
+# supervisor start, and a fresh mechanical adopt MUST boot — the flag is loud, never a refusal.
+if [ "$PREFLIGHT_SCOPE" = full ] && [ -f "$MANIFEST" ]; then
+  _ai_gate="$KICKOFF_DIR/lefthook-kickoff.yml"
+  _ai_root="$REPO_DIR/lefthook.yml"
+  _ai_unwired=0
+  if [ ! -f "$_ai_gate" ] && ! { [ -f "$_ai_root" ] && grep -qE 'lefthook-kickoff\.yml|kickoff' "$_ai_root" 2>/dev/null; }; then
+    _ai_unwired=1
+  fi
+  if [ "$_ai_unwired" = 1 ]; then
+    _ai_why=""
+    if command -v git >/dev/null 2>&1 && git -C "$REPO_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+      _ai_mts="$(stat -c %Y "$MANIFEST" 2>/dev/null || stat -f %m "$MANIFEST" 2>/dev/null || printf '')"
+      if [ -n "$_ai_mts" ]; then
+        _ai_n="$(git -C "$REPO_DIR" log --format=%ct 2>/dev/null | awk -v t="$_ai_mts" '$1 > t' | wc -l | tr -d ' ')"
+        case "$_ai_n" in ''|*[!0-9]*) _ai_n=0 ;; esac
+        [ "$_ai_n" -gt 0 ] && _ai_why="$_ai_n commit(s) landed after adopt"
+      fi
+    fi
+    _ai_ms="${MC_STATE_FILE:-$KICKOFF_DIR/state/mission-control/mission-state.json}"
+    case "$_ai_ms" in /*) : ;; *) _ai_ms="$REPO_DIR/$_ai_ms" ;; esac
+    _ai_actn="$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1])).get("activity") or []))' "$_ai_ms" 2>/dev/null || printf 0)"
+    case "$_ai_actn" in ''|*[!0-9]*) _ai_actn=0 ;; esac
+    [ "$_ai_actn" -gt 0 ] && _ai_why="${_ai_why:+$_ai_why; }$_ai_actn board activity entries"
+    _ai_tr=""
+    [ -f "$REPO_DIR/TRACKER.md" ] || _ai_tr=" — and TRACKER.md is missing (the /adopt session never ran)"
+    if [ -n "$_ai_why" ]; then
+      warn "ADOPT INCOMPLETE — this repo is ACTIVE ($_ai_why) but the kickoff quality gates are WHOLLY UNWIRED (no .kickoff/lefthook-kickoff.yml, no root lefthook extends)$_ai_tr. Commits are landing with NO secret/structure scan. Fix: re-run \`kickoff adopt\` (wires the generic gates), then \`/adopt\` in a Claude Code session (stack gates + TRACKER). Advisory: startup is NOT blocked. → run \`kickoff doctor\` to back-fill."
+    else
+      ok "gates unwired but the repo shows no activity yet — a legit fresh adopt (finish with \`kickoff adopt\` + \`/adopt\`); not escalated"
+    fi
+  else
+    ok "adopt-completeness: the kickoff gate wiring is present — no incomplete-adopt escalation"
+  fi
+
+  # ── 9b. BRAINS-completeness — an INDEPENDENT predicate (SOFT — a LOUD warn, NEVER a fail) ───
+  # Check #9 above asks ONE question ("are the gates wired?") and `kickoff adopt` now always
+  # answers it yes (`_ensure_kickoff_gates`, authored-by-adopt). So the whole escalation is
+  # unreachable for every modern adoption — measured 2026-08-06: all six live adopters carry the
+  # gate file, so not one of them could ever trip it, no matter how brainless.
+  #
+  # The gates and the brains are different questions with different fixes, and the second one is
+  # the one that decides whether the org can ACT at all: one live adopter ran 35 memory-writing sessions
+  # with no .claude/agents/ and a 76-byte CLAUDE.md. It is asked here, OUTSIDE the `_ai_unwired`
+  # branch, so a gates-wired repo can still report a brains gap.
+  #
+  # ONE implementation of the predicate, shared with `kickoff adopt` and `kickoff verify` —
+  # crew-probe.py, resolved from the core tree that is actually RUNNING (a pull adopter's cwd is
+  # their own repo and has no scripts/). warn() only, by design: this runs at EVERY supervisor
+  # start, and a brainless org MUST boot — the worker it boots is exactly what closes the gap.
+  _bp_probe="$RUNNING_CORE_DIR/scripts/crew-probe.py"
+  if [ -f "$_bp_probe" ]; then
+    _bp_rc=0
+    _bp_out="$(python3 "$_bp_probe" brains-verdict --repo "$REPO_DIR" 2>/dev/null)" || _bp_rc=$?
+    if [ "$_bp_rc" = 1 ] && [ -n "$_bp_out" ]; then
+      _bp_mark=""
+      [ -f "$KICKOFF_DIR/adopt-brains-pending" ] && _bp_mark=" (marked: .kickoff/adopt-brains-pending)"
+      warn "BRAINS INCOMPLETE — the plumbing is wired but this org has no MIND$_bp_mark. $_bp_out. It can be steered and cannot ACT: no specialist owns any domain, and the charter says nothing about this repo. The worker's re-ground authors the crew + charter at boot and announces the draft for your approval; or run \`/adopt\` in a Claude Code session here. Advisory: startup is NOT blocked."
+    elif [ "$_bp_rc" = 0 ] && [ -n "$_bp_out" ]; then
+      ok "brains-completeness: $_bp_out"
+    else
+      warn "brains-completeness: could not read the crew/charter verdict (crew-probe.py unrunnable) — SKIPPED, not passed"
+    fi
+  else
+    warn "brains-completeness: crew-probe.py not found in the running core ($RUNNING_CORE_DIR/scripts) — SKIPPED, not passed"
+  fi
 fi
 
 # ── summary + fail-closed exit ───────────────────────────────────────────────

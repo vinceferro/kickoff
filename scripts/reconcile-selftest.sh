@@ -4,7 +4,7 @@
 #   bash scripts/reconcile-selftest.sh
 #
 # Mirrors adopt-selftest.sh (mk fixtures + ok/bad/chk asserts). Exercises the three G9
-# additions that UNBLOCK the legacy-adopter (Bliz) migration:
+# additions that UNBLOCK the legacy-adopter migration:
 #   (1) `kickoff adopt --reconcile` — the ALREADY-adopted, manifest-less shape (core.lock
 #       present, no adopt-manifest.json → preflight #8 fail-closed). The arc: preflight RED →
 #       reconcile → preflight GREEN — and the manifest records ONLY what is PROVABLE
@@ -79,7 +79,7 @@ git -C "$CORE" add -A; git -C "$CORE" commit -qm "stub core" >/dev/null
 git -C "$CORE" tag "$CORE_TAG"
 CORE_COMMIT="$(git -C "$CORE" rev-parse HEAD)"
 
-# ── the BLIZ-shaped adopter: hand-wired kickoff files + core.lock, NO manifest ───────
+# ── the legacy-shaped adopter: hand-wired kickoff files + core.lock, NO manifest ───────
 # ONE byte-matching shim (.kickoff/bin/mc) + TWO byte-matching file seams (.kickoff/.gitignore,
 # .kickoff/KICKOFF.md) + ONE hand-edited seam (.kickoff/bin/scan-secrets) + a plugin-keyed
 # .claude/settings.json + a CLAUDE.md kickoff block with NO recorded pre-edit bytes.
@@ -87,9 +87,9 @@ FIX="$(mk)"
 mkdir -p "$FIX/.kickoff/bin" "$FIX/.kickoff/memory" "$FIX/.claude" "$FIX/chan" "$FIX/src"
 git -C "$FIX" init -q
 git -C "$FIX" config user.email b@b.b; git -C "$FIX" config user.name b
-printf 'print("bliz")\n' > "$FIX/src/app.py"
+printf 'print("app")\n' > "$FIX/src/app.py"
 # the operator's CLAUDE.md ALREADY carrying the kickoff block (appended long ago; pre-bytes lost)
-printf '# Bliz\n\nHouse rules.\n\n<!-- kickoff:begin core-vOLD -->\n@.kickoff/KICKOFF.md\n<!-- kickoff:end -->\n' > "$FIX/CLAUDE.md"
+printf '# Adopter\n\nHouse rules.\n\n<!-- kickoff:begin core-vOLD -->\n@.kickoff/KICKOFF.md\n<!-- kickoff:end -->\n' > "$FIX/CLAUDE.md"
 # seams: extract the CURRENT templates from the code under test (what a wired adopter holds)
 python3 - "$AM" "$FIX" <<'PYEOF'
 import importlib.util, os, sys
@@ -99,7 +99,7 @@ fix = sys.argv[2]
 with open(os.path.join(fix, ".kickoff/bin/mc"), "w") as f:
     f.write(am.SHIM_TEMPLATES["mc"])                       # BYTE-MATCHING shim
 with open(os.path.join(fix, ".kickoff/bin/scan-secrets"), "w") as f:
-    f.write(am.SHIM_TEMPLATES["scan-secrets"] + "# HAND-EDIT: bliz patched this\n")  # HAND-EDITED
+    f.write(am.SHIM_TEMPLATES["scan-secrets"] + "# HAND-EDIT: adopter patched this\n")  # HAND-EDITED
 PYEOF
 chmod 0755 "$FIX/.kickoff/bin/mc" "$FIX/.kickoff/bin/scan-secrets"
 cp "$REPO/scripts/templates/kickoff.gitignore" "$FIX/.kickoff/.gitignore"   # BYTE-MATCHING file seam
@@ -122,7 +122,7 @@ tag $CORE_TAG
 commit $CORE_COMMIT
 EOF
 git -C "$FIX" add -A >/dev/null 2>&1 || true
-git -C "$FIX" commit -qm "bliz baseline (hand-wired kickoff, no manifest)" >/dev/null 2>&1 || true
+git -C "$FIX" commit -qm "adopter baseline (hand-wired kickoff, no manifest)" >/dev/null 2>&1 || true
 # the INSTALLED plugin state: a project-scope row + a cache snapshot byte-equal to \$CORE/plugin
 mkdir -p "$CFG/plugins/cache/kickoff-local/kickoff/0.0.1"
 cp -a "$CORE/plugin/." "$CFG/plugins/cache/kickoff-local/kickoff/0.0.1/"
@@ -156,7 +156,7 @@ pf() {   # pf <repo> — the preflight FROM the pinned core (running-core == KIC
 snap() { find "$1" -type f -printf '%p %T@\n' 2>/dev/null | LC_ALL=C sort; }   # mtime snapshot
 
 # ══════════════════════════════════════════════════════════════════════════════════════
-echo "1. the Bliz arc: core.lock + hand-wired files + NO manifest → preflight #8 RED"
+echo "1. the legacy-adopter arc: core.lock + hand-wired files + NO manifest → preflight #8 RED"
 pf "$FIX"
 chk "pre-reconcile: whole preflight FAILS (rc≠0 — #8 fail-closed absence)"    "[ $PF_RC -ne 0 ]"
 chk "pre-reconcile: #8 names the manifest as MISSING" \

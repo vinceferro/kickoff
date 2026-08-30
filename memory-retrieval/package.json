@@ -1,0 +1,16 @@
+{
+  "name": "memory-retrieval",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Self-contained hybrid (BM25 + local-vector) retrieval over file-based agent memory. node:sqlite (zero-dep) + FTS5/BM25 + local transformers.js embeddings + RRF fusion + a proactive UserPromptSubmit hook + an eval harness. Installs its own deps via `pnpm install --ignore-workspace` so the local embedder stays self-contained — drop the directory into any repo and point MEMORY_DIR at its memory/.",
+  "type": "module",
+  "scripts": {
+    "index": "node --experimental-sqlite index.mjs",
+    "retrieve": "node --experimental-sqlite retrieve.mjs",
+    "eval": "node --experimental-sqlite eval.mjs",
+    "hook": "node --experimental-sqlite hook.mjs"
+  },
+  "dependencies": {
+    "@xenova/transformers": "2.17.2"
+  }
+}

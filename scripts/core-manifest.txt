@@ -1,96 +1,180 @@
-# scripts/core-manifest.txt — the CORE file manifest for `kickoff pull`  [R3]
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #
-# WHAT THESE ARE
-#   The CORE files that travel via `kickoff pull`: pulled from a pinned git tag into
+#
+#
+#   $KICKOFF_CORE_DIR/memory-retrieval/hook.mjs (LOCKED decision #4), which stays single-sourced above.
+#     1. Test suites never travel (the boot-checks block states the rule).
+#   2026-08-17: one worker at 79% over 423 turns never set the refresh flag, another had
+#     2. It is MAINTAINER-ONLY by construction: it scans plugin/skills/**, which exists in the CORE
+#     3. Discovery is via lefthook.yml (kickoff's own, which does not ship) — a suite is "wired" by
+# ── §5 THE PLUGIN — the engine packaged as a Claude Code plugin (design §1.3/§2.2) ──────────────
+#   absent-only → idempotent source-mode instance.env patch → from-scratch index build with any
+#   acceptance proofs). It must travel because that mode's fixes live in the tree it wires; the
+#    adopter). It must still TRAVEL: _read_file_seam_template dies FATAL if it is missing. ─
+#    adopter repo — so it is deliberately absent from FILE_SEAM_TEMPLATES (registering it there
+#   adopter — silently inert, the exact failure this block exists to prevent.
+#   against the ledger — unrecorded drift exits non-zero, and the release gate's HARD
+#   agent-mail-hook.sh is the SECOND UserPromptSubmit hook. It exists because boot was the wrong
+#   agent-mail.py is the fifth boot check and the only one that reads state written by ANOTHER
+#   already auto-compacted. Self-noticing is unreliable BY CONSTRUCTION and autocompaction
+#   always-loaded index costs too much and tells you to compact or demote, and this says WHICH entries
+#   an adopter's opencode pointing at charters that never arrived.
+#   and only the agent knows whether it has checkpointed. FAIL-SILENT; HANDOFF_NUDGE=0 off.
+#   and the advice "demote something" is unactionable without the measurement behind it. Not a boot
+#   and the whole-tree lock (format 2) PINS every file at the pinned commit — the plugin `version`
+#   and whole-tree-pins, so every repo file is already on the box. They are listed so the
+#   a PROJECT-SCOPE local-path marketplace (kickoff-local) + enables it (2 repo settings keys);
+#   a proof to live, proven 2026-08-27 when the second box could not walk it because headless
 #   a read-only clone ($KICKOFF_CORE_DIR) and integrity-pinned in .kickoff/core.lock.
-#   They are PULLED-AND-PINNED — NEVER hand-edited in an adopter. preflight check #6
-#   fails-closed on ANY drift: a copied-and-patched core file is exactly the fork R1
-#   set out to kill, and R3's whole point is that origin's improvement flows in ONCE.
-#
-# WHAT DOES NOT TRAVEL (instance data — per-adopter, stays local)
-#   .kickoff/            — PARTLY tracked: the generated .kickoff/.gitignore keeps the private
+#   are gitignored/absent on dev (which ones depends on where main sits — main@17c91ac tracks the
+#   + a runner that watches, nudges, RESPAWNS a dead session onto the same worktree
+#   a second machine cloning the ENGINE-SOURCE repo wires a working instance with it (kickoff init
+#   beat-length-guard.py is the PreToolUse hook on the Telegram reply/edit_message tools. It exists
+#   because the "keep beats followable" rule lived in CLAUDE.md, in a memory file, AND was injected on
 #                          bits (instance.env, adopt-manifest.json, core.lock, state/, locks) out
-#                          of git; the team-shareable seams (KICKOFF.md, KICKOFF.local.md, bin/,
-#                          memory/) are TRACKED on purpose
-#   memory-retrieval/memory-index.db     — this adopter's built retrieval index
-#   memory-retrieval/eval-set.json       — this adopter's eval corpus (template DOES travel)
-#   mission-control/mission-state.json   — this adopter's live board state
-#
-# FORMAT
-#   One repo-root-relative path per line. Blank lines and `#` comment lines are ignored.
-#   `kickoff pull` reads THIS file from the pinned checkout (so each tag defines its own
-#   core set) and checksums each path relative to $KICKOFF_CORE_DIR into core.lock.
-
-# ── launcher + session-refresh supervisor ──────────────────────────────────────
-scripts/supervisor.sh
-scripts/session-run.sh
-scripts/start-supervisor.sh
-scripts/go-autonomous.sh
-scripts/rotate-log.sh
-
-# ── supervisor auth self-heal (inert-by-default; armed via KICKOFF_AUTH_HEAL in instance.env) ──
-#   supervisor.sh runtime-sources auth-heal.sh (fail-open stub if absent) and session-run.sh
-#   references relogin.sh — so BOTH must travel, or a pulled supervisor.sh dangles on a file
-#   `kickoff pull` never delivers (ships the wiring but not the capability). install-auth-heal.sh
-#   stays maintainer-only: adopters get the wiring pre-baked in supervisor.sh, so they never need
-#   the retrofit installer.
-scripts/auth-heal.sh
-scripts/relogin.sh
-
-# ── telegram-channel reap-on-startup (v0.6 hardening; default-on, KICKOFF_BRIDGE_REAP=0 disables) ──
-#   session-run.sh runtime-sources bridge-reap.sh (bash -n gated; absent/broken → a no-op stub,
-#   the same discipline as auth-heal.sh above) to free THIS project's getUpdates slot from a
-#   VERIFIED-stale holder before claude spawns — so it must travel, or a pulled session-run.sh
-#   dangles on a file `kickoff pull` never delivers.
-scripts/bridge-reap.sh
-
-# ── fail-closed preflight + the per-instance config contract ────────────────────
-scripts/preflight.sh
-scripts/instance.env.example
-
-# ── the generic, language-agnostic scanners (quality machinery) ─────────────────
-scripts/scan-secrets.sh
-scripts/scan-structure.sh
-
-# ── local serving: the promoted box-ingress machinery (design §4 / §7.6) ────────
-#   One machine-level Caddy singleton fronts every adopter's multi-service preview under
-#   /<project>/<app>; state is registry.json under $INGRESS_DIR (~/box-ingress), zero repo
-#   footprint, so eject runs `ingress.sh remove <project>`. install.sh is the operator turnkey
-#   for reboot persistence (user-systemd). Pinned/pullable so the machinery travels with a clone.
-scripts/ingress.sh
-scripts/ingress-install.sh
-
-# ── Tier-1 public sharing: the zero-spend Tailscale Funnel enablement turnkey (v0.5 G3) ──
-#   The single-service counterpart to ingress.sh's multi-service funnel: checks Funnel enablement +
-#   relays the one-time consent turnkey so a friend NOT on the tailnet can open a public link. The
-#   `preview` skill's `share` step drives it. Read-only (status probes only) — never mutates tailscale.
-scripts/share-enable.sh
-
-# ── mission control: the WHOLE SERVED SURFACE travels + pins together (core-v0.4 S5) ──
-#   Closes the pre-existing half-measure: only mc-update.py was pinned while the server
-#   that routes everything + the boards it serves were not — pinning a deck without its
-#   server is how a stale server 404s a fresh deck. Per-instance data still never travels:
-#   mission-state.json (the adopter's live board, KICKOFF_STATE-wired) and the runtime
-#   files (.mission-token, secrets-inbox/, *.lock) are gitignored, so a served core
+#   block above. Three reasons, so a future reader does not read the gap as an oversight:
+#   boot-list guard does not cover it.
+#   boxes without its creds) and adopters must not inherit that. No model pin either:
+#   bringup-source-instance.sh is the ONE-COMMAND turnkey for the sanctioned source-checkout mode:
+# ── brownfield adopt intelligence: the crew probe + restraint validator (G3b — the adopt
+# ── brownfield adopt receipt: the manifest writer/verifier (the eject/preflight-#8 spine) ─
+#   cadence for mail: a worker can stay up for days, so a sibling's finding could rot unread in a
+#   capability: what works on Claude Code / on opencode / why / what we recommend);
+#    caught by this repo's own plugin-selftest.sh: a pinned core missing this file made `kickoff pull`
+#   cheaper half of that trade.
+#   check — a natural-boundary tool, so the boot-list guard does not cover it.
 #   checkout stays clean under the whole-tree pin.
-mission-control/mc-update.py
-mission-control/server.py
-mission-control/dashboard.html
-mission-control/secrets.html
-mission-control/universe.html
-
-# ── the universe deck's baked default theme (template→seam: `adopt` seeds the editable
-#    .kickoff/universe.theme.json per-instance copy — THAT one is adopter-owned, never
-#    pinned; this template is the core default /universe-theme falls back to) ──
-scripts/templates/universe.theme.json
-
-# ── vendored Three.js (core-v0.4 S5) — the EXACT transitive import closure universe.html
-#    uses (three@0.160.0 from the integrity-verified npm tarball; see PROVENANCE.md).
-#    Upstream layout preserved so the addons' relative imports resolve unchanged; served
-#    ONLY by server.py's realpath-contained /vendor/ route. The deck loads with ZERO
+.claude/agent-charter-template.md
+.claude/output-styles/plain-report.md
+.claude/skill-template.md
+#        clone, not in an adopter's repo. Pinned into an adopter it would find zero files and pass
+#   Closes the pre-existing half-measure: only mc-update.py was pinned while the server
+#   confusing: the core clone is a FULL checkout, so tree presence — not manifest membership — is what
+# context-handoff-nudge.py — THE HANDOFF TRIGGER. The charter has always said to measure
+#   context-headroom.py measures how full a worker's context window is. It is NOT a boot check — it is
+#   conveniences: memory-search.js wires the retrieval corpus into opencode sessions and
+CORE-CHANGELOG.md
+#   core set) and checksums each path relative to $KICKOFF_CORE_DIR into core.lock.
+#   correction: long is fine when the situation earns it), past a runaway cap it DENIES with the
+#   dangles on a file `kickoff pull` never delivers.
+#   degradation and hand off past ~80%; nothing made anyone look. Measured on the live fleet
+#   dependency, not a convenience: without it on the box `kickoff adopt` and the board's
+#   deployer ships, coordinator orchestrates) — and the two plugins are capabilities, not
+#   development branch but was never carried into the PUBLIC release tree, so on a pull adopter —
+#   directory nobody looked at. It settles the empty case in pure bash — no interpreter start — so
+#   disagreed within one slice, and a keydir divergence fails GREEN. One manifest entry is the
+docs/moonpay-2min-runofshow.md
+docs/PARITY.md
+#   engine-credit.js keeps the engine seam honest (parity is a release gate, not a
+#   engine-limited. parity-report-selftest.sh deliberately does NOT: test suites never travel
+# ── engine-parity: the drift LEDGER + its probe (the recorded-drift principle, 2026-08-28) ──
+#   essentially every turn — three written copies — and still lost to a growing context. A hook does
+#   exactly that, since JSON can't carry comments). Listed so the existence guard covers
+#   EXISTENCE GUARD covers them: a future tag that drops or renames one fails the pull loudly
 #    external requests — no CDN at runtime. NEVER hand-edit (drift fails preflight #6). ──
-mission-control/vendor/three/LICENSE
-mission-control/vendor/three/PROVENANCE.md
+# ── eyes: is the browser rendering on a GPU or on the CPU? ──────────────────────
+#    facing map of the seam dir; travels+pins per tag, and sync-seams regenerates it on pull) ─
+# ── fail-closed preflight + the per-instance config contract ────────────────────
+#   fail-closes without it), TRACKER.md, mission-control/mission-state.json — so a bare
+#   fails-closed on ANY drift: a copied-and-patched core file is exactly the fork R1
+#    FATAL on this seam instead of failing the pull loudly-but-gracefully at the existence-guard step. ─
+#   files (.mission-token, secrets-inbox/, *.lock) are gitignored, so a served core
+#   file, so a future release cannot silently drop it again. Note the distinction that made this
+#   first two; TRACKER.md was tracked on older release lineages) — memory/MEMORY.md (the always-loaded roll-up; preflight #3
+#   footprint, so eject runs `ingress.sh remove <project>`. install.sh is the operator turnkey
+# FORMAT
+#   for reboot persistence (user-systemd). Pinned/pullable so the machinery travels with a clone.
+#   for the same reason bringup does: the machine that needs it starts on a tree that lacks it.
+#   from the SAME core, so pinning keeps them in lockstep — but the mechanism only WORKS if
+#    from THIS exact core file — read directly from the core root, the same idiom as the agent-charter
+# gate config is inert and a repo commits ungated while every check reports healthy.
+#   `git checkout <dev>` silently DELETES them. This saves them across the switch (MEMORY.md is
+#    hand-written turnkey again — which is how a stale branch got a fresh-looking header. ─
+#   have earned their place, from the retrieval log. Read-only — it reports, it never edits the corpus.
+#   hides the gauge, so this reads the transcript instead of trusting the session's own sense
+# ── hybrid memory-retrieval layer (the built index + eval-set.json stay local) ──
+#   instead of leaving `kickoff adopt` and the Mission Control server calling a script that
+#   interactive sessions inherit the user's global config, headless workers get
+#   invocation for the same reason (a lost mode bit would exit 126 — silently inert).
+#   is baked into each core-v* tag (LOCKED decision #1), so a pull always re-syncs deterministically.
+#   is caught by preflight check #6 too. (Drift/accident guard — core.lock is unsigned,
+#   is why the boot-list guard (reground-prompt-selftest.sh, which holds BOOT_CHECKS against the
+#   is "wired" by its lefthook.yml stanza, never by a line here. Naming them here is documentation
+#   it here is the DURABLE half: `kickoff pull` refuses to pin a tag whose manifest names a missing
+#   — it never touches the refresh flag itself, because a refresh discards uncommitted work
+#   It ships for the same reason context-headroom.py does: an adopter's index grows exactly like ours,
+#        its lefthook stanza, never by a line here, and the release gate reads it from there.
+#   KICKOFF_CORE_DIR and MEMORY_DB deliberately UNSET because that is the interactive shape under
+#   .kickoff/            — PARTLY tracked: the generated .kickoff/.gitignore keeps the private
+#   `kickoff pull` never delivers (ships the wiring but not the capability). install-auth-heal.sh
+#   `kickoff pull` reads THIS file from the pinned checkout (so each tag defines its own
+#   `kickoff pull` re-syncs its user-global cache; the interactive session runs from that cache and
+#    .kickoff/universe.theme.json per-instance copy — THAT one is adopter-owned, never
+# ── launcher + session-refresh supervisor ──────────────────────────────────────
+#   lifecycle check (an adopter wires it into their own hooks; kickoff's lefthook.yml is
+#   (localhost-only, tailnet strictly opt-in). push-verified.sh + claims-audit.py are
+# ── local serving: the promoted box-ingress machinery (design §4 / §7.6) ────────
+#   maintainer-only and does NOT ship, so nothing here calls it on an adopter's behalf).
+#   makes a file reachable; this list is an existence CONTRACT, not a copy list (found 2026-08-07).
+#   manual db moved aside as untrusted → verification by consumed state → the printed P1–P4
+#   measured numbers so the coordinator rewrites it. It never truncates or rewords — nothing the
+#                          memory/) are TRACKED on purpose
+#   memory-index-triage.py is the companion to memory-budget-check.sh above: the budget says the
+#   memory-orphan-check.sh + memory-budget-check.sh + crew-review-due.sh, so an adopter
+memory-retrieval/demo.mjs
+memory-retrieval/eval.mjs
+#   memory-retrieval/eval-set.json       — this adopter's eval corpus (template DOES travel)
+memory-retrieval/eval-set.template.json
+memory-retrieval/hook.mjs
+memory-retrieval/index.mjs
+memory-retrieval/install-model.mjs
+memory-retrieval/lib/embeddings.mjs
+memory-retrieval/lib/memory.mjs
+memory-retrieval/log-stats.mjs
+#   memory-retrieval/memory-index.db     — this adopter's built retrieval index
+memory-retrieval/package.json
+memory-retrieval/refresh-metrics.mjs
+memory-retrieval/retrieve.mjs
+memory-retrieval/run.sh
+#   memory-search-probe.sh makes acceptance proof P1 runnable. P1 ("a fresh opencode session's
+#   memory_search returns real hits") previously needed a human in a live session — a bad place for
+#   MINIMAL: default_agent + instructions + autoupdate off, and NOTHING else, because the
+mission-control/dashboard.html
+mission-control/mc-update.py
+#   mission-control/mission-state.json   — this adopter's live board state
+mission-control/secrets.html
+mission-control/server.py
+# ── mission control: the WHOLE SERVED SURFACE travels + pins together (core-v0.4 S5) ──
+mission-control/universe.html
 mission-control/vendor/three/build/three.module.js
 mission-control/vendor/three/examples/jsm/controls/OrbitControls.js
 mission-control/vendor/three/examples/jsm/postprocessing/EffectComposer.js
@@ -101,62 +185,219 @@ mission-control/vendor/three/examples/jsm/postprocessing/ShaderPass.js
 mission-control/vendor/three/examples/jsm/postprocessing/UnrealBloomPass.js
 mission-control/vendor/three/examples/jsm/shaders/CopyShader.js
 mission-control/vendor/three/examples/jsm/shaders/LuminosityHighPassShader.js
-
-# ── brownfield adopt receipt: the manifest writer/verifier (the eject/preflight-#8 spine) ─
-scripts/adopt-manifest.py
-
-# ── the split-charter SEAM template (gen-charter writes .kickoff/KICKOFF.md from this; it
-#    travels+pins so each tag defines its own charter, and sync-seams regenerates it on pull) ─
-scripts/templates/KICKOFF.md
-
-# ── the .kickoff/.gitignore SEAM template (gen-gitignore writes .kickoff/.gitignore from this;
-#    travels+pins so each tag defines the ignore set, and sync-seams regenerates it on pull) ─
-scripts/templates/kickoff.gitignore
-
-# ── the .kickoff/README SEAM template (gen-readme writes .kickoff/README from this — the human-
-#    facing map of the seam dir; travels+pins per tag, and sync-seams regenerates it on pull) ─
-scripts/templates/kickoff-README.md
-
-# ── the function-agent charter template (every new agent is authored from it) ───
-.claude/agent-charter-template.md
-
-# ── hybrid memory-retrieval layer (the built index + eval-set.json stay local) ──
-memory-retrieval/hook.mjs
-memory-retrieval/index.mjs
-memory-retrieval/retrieve.mjs
-memory-retrieval/eval.mjs
-memory-retrieval/refresh-metrics.mjs
-memory-retrieval/log-stats.mjs
-memory-retrieval/demo.mjs
-memory-retrieval/run.sh
-memory-retrieval/package.json
-memory-retrieval/eval-set.template.json
-memory-retrieval/install-model.mjs
-memory-retrieval/lib/embeddings.mjs
-memory-retrieval/lib/memory.mjs
-
-# ── the pull mechanism itself (self-pinned) ─────────────────────────────────────
-#   So a hand-edit to the turnkey / manifest / changelog in an adopter's core checkout
-#   is caught by preflight check #6 too. (Drift/accident guard — core.lock is unsigned,
-#   so a determined actor who rewrites core files could regenerate the lock; this stops
-#   the fat-finger, not a targeted attacker.)
-scripts/kickoff
-scripts/core-manifest.txt
-CORE-CHANGELOG.md
-
-# ── §5 THE PLUGIN — the engine packaged as a Claude Code plugin (design §1.3/§2.2) ──────────────
-#   The plugin lives at ~/kickoff-core/plugin/ in the pulled clone. `kickoff adopt` registers it as
-#   a PROJECT-SCOPE local-path marketplace (kickoff-local) + enables it (2 repo settings keys);
-#   `kickoff pull` re-syncs its user-global cache; the interactive session runs from that cache and
-#   the headless worker execs it via `--plugin-dir`. Listed here so the plugin TRAVELS with the tag
-#   and the whole-tree lock (format 2) PINS every file at the pinned commit — the plugin `version`
-#   is baked into each core-v* tag (LOCKED decision #1), so a pull always re-syncs deterministically.
-#   The heavy memory-retrieval/ engine is NOT bundled: the thin plugin/hooks/memory-hook.sh REFERENCES
-#   $KICKOFF_CORE_DIR/memory-retrieval/hook.mjs (LOCKED decision #4), which stays single-sourced above.
-plugin/.claude-plugin/plugin.json
+mission-control/vendor/three/LICENSE
+mission-control/vendor/three/PROVENANCE.md
+#   mission-state.json (the adopter's live board, KICKOFF_STATE-wired) and the runtime
+#   mode itself is documented in RUNNING.md ("engine-development mode"). Not a boot check — the
+#   newbox-from-main.sh is the step BEFORE bringup for a clone of PUBLIC main. main (the curated
+#   nice-to-have). scripts/templates/opencode.json is the ADOPTER's config — deliberately
+#    NOT a file seam and deliberately absent from FILE_SEAM_TEMPLATES. It must still TRAVEL:
+#   not. Two tiers: past a soft line count it ALLOWS with a followability nudge (the operator's own
+#   of a deliberate absence, so a future reader does not read the gap as an oversight and add them.
+#                          of git; the team-shareable seams (KICKOFF.md, KICKOFF.local.md, bin/,
+#   of itself. It nudges past a floor and, near the ceiling, names the handoff steps in order
+#   One machine-level Caddy singleton fronts every adopter's multi-service preview under
+#   One repo-root-relative path per line. Blank lines and `#` comment lines are ignored.
+#    ONLY by server.py's realpath-contained /vendor/ route. The deck loads with ZERO
+#   only channel out and a bug here would gag a worker silently; BEAT_GUARD=0 disables it.
+#   only, so it never re-fires on inherited content — that scoping is what keeps it installed.
+#    on pull). Listed here for the SAME existence-contract reason as the three seam templates above:
+.opencode/agent/builder.md
+.opencode/agent/coordinator.md
+.opencode/agent/deployer.md
+.opencode/agent/planner.md
+.opencode/agent/reviewer.md
+.opencode/command/lanes.md
+#   OPENCODE_MODEL_PROVIDER/OPENCODE_MODEL_ID from instance.env (README-opencode.md says
+#   .opencode/node_modules is missing (gitignored) — a missing dev dep is not a broken instance.
+.opencode/plugins/engine-credit.js
+.opencode/plugins/lanes-status.js
+.opencode/plugins/memory-search.js
+#   `opencode run` was server-erroring for reasons unrelated to memory. The probe drives the
+#   operator reads is silently altered. FAIL-OPEN by construction, because it sits in front of the
+#   org on the box. Same silent-when-empty contract as orphaned-work.py, and same `python3 <path>`
+#   origin's own opencode.json pins the `opencode` provider (a provider that silently wedges
+#   orphaned-work.py is the first NON-shell boot check. It is invoked as `python3 <path>` in the
+#   own box (`bash scripts/parity-report.sh`) and read the record of what is deliberately
+#   page). The fallback is silent by design, which is right for the page and wrong for the operator —
+#   parity-ledger lane runs it on the candidate tree. Both travel so an adopter can probe their
+#    pinned; this template is the core default /universe-theme falls back to) ──
+plugin/agents
+#   PLUGIN CACHE, not the engine's copy, and the two really do differ until a pull refreshes it.
 plugin/.claude-plugin/marketplace.json
+plugin/.claude-plugin/plugin.json
+plugin/hooks/agent-mail-hook.sh
+plugin/hooks/beat-length-guard.py
+plugin/hooks/context-handoff-nudge.py
 plugin/hooks/hooks.json
+plugin/hooks/mc-hook.sh
 plugin/hooks/memory-hook.sh
 plugin/.mcp.json
 plugin/skills
-plugin/agents
+#   plugin's real execute() directly (same CORE_RETRIEVE resolution, same child spawn), with
+#   `preview` skill's `share` step drives it. Read-only (status probes only) — never mutates tailscale.
+#   /<project>/<app>; state is registry.json under $INGRESS_DIR (~/box-ingress), zero repo
+#   prompt, deliberately: a mode bit lost in transit would make an exec-bit invocation 126 on the
+#   proof passes — the agent's sentence alone lands claimed/unverified, never done.
+#   prose in scripts/kickoff) against teaching a path that only resolves in the ORIGIN. It is
+#   provisioning call both die on an unresolved import. The previous revision duplicated the
+#    _read_file_seam_template dies FATAL if it is missing, and a release cut without it is a
+#   recorded here, NOT listed, and the omission is the point — same shape as the secrets-suite
+#   RECORDED, never silent. docs/PARITY.md is the adopter-facing ledger (one section per
+#   references relogin.sh — so BOTH must travel, or a pulled supervisor.sh dangles on a file
+#   re-ground prompt) could never have covered it. Until core-v0.27 the file was tracked on the
+#   relays the one-time consent turnkey so a friend NOT on the tailnet can open a public link. The
+#   release gate discovers them from it — which is the ONLY discovery path that matters, so a suite
+#   release lineage) and the dev trunk share NO merge base, and up to three tracked-on-main paths
+#   resolver into both scripts specifically to avoid adding this line; the two copies then
+#   restored from origin/main, its authoritative hand-curated copy) and then execs bringup. Travels
+#   run at natural boundaries and explicitly NEVER at boot (a fresh session always reads empty), which
+#   running on every turn of every agent costs nothing until there is actually something to say.
+#    Same asymmetry as the upgrade turnkey above — an OPERATOR artifact that lands in $HOME, so
+#   scan-identity.sh runs beside it on pre-commit and catches the OTHER thing a public repo cannot
+scripts/adopt-manifest.py
+scripts/agent-mail.py
+scripts/auth-heal.sh
+scripts/bridge-reap.sh
+scripts/bringup-source-instance.sh
+scripts/claims-audit.py
+scripts/context-headroom.py
+scripts/core-manifest.txt
+# scripts/core-manifest.txt — the CORE file manifest for `kickoff pull`  [R3]
+scripts/crew-probe.py
+scripts/crew-review-due.sh
+scripts/go-autonomous.sh
+scripts/gpu-render-check.sh
+scripts/graph-executor.sh
+scripts/ingress-install.sh
+scripts/ingress.sh
+scripts/instance.env.example
+scripts/kickoff
+scripts/lane-dispatch.sh
+scripts/lane-runner.sh
+scripts/lanes-board-server.py
+scripts/lanes-board.sh
+scripts/lanes-snapshot.py
+scripts/lane-status.sh
+scripts/memory-budget-check.sh
+scripts/memory-index-triage.py
+scripts/memory-orphan-check.sh
+scripts/memory-search-probe.sh
+scripts/memory-supersede-check.sh
+scripts/newbox-from-main.sh
+#   scripts/origin-only-path-selftest.sh guards the surfaces below (plugin/skills + the operator
+scripts/orphaned-work.py
+scripts/parity-report.sh
+#   scripts/parity-report.sh PROBES each capability's wiring per engine and holds the findings
+scripts/preflight.sh
+scripts/probe.sh
+scripts/push-verified.sh
+#   scripts/reground-prompt-selftest.sh enforces this list against the prompt.
+scripts/relogin.sh
+scripts/rotate-log.sh
+scripts/scan-identity.sh
+scripts/scan-secrets.sh
+scripts/scan-structure.sh
+scripts/secret-box-keygen.mjs
+scripts/secret-decrypt.mjs
+scripts/secret-keydir.mjs
+scripts/session-run.sh
+scripts/share-enable.sh
+scripts/start-supervisor.sh
+scripts/supervisor.sh
+scripts/templates/kickoff.gitignore
+scripts/templates/kickoff-hook-runner.sh
+scripts/templates/KICKOFF.md
+scripts/templates/kickoff-README.md
+scripts/templates/opencode.json
+scripts/templates/README-opencode.md
+scripts/templates/ship-turnkey.sh.tmpl
+scripts/templates/universe.theme.json
+scripts/templates/upgrade-turnkey.sh.tmpl
+#   secret-encrypt.mjs, which is NOT in this manifest, so pinning them for adopters would pin
+#   secret-keydir-conformance-selftest.sh (the CROSS-CONSUMER matrix: keygen ≡ secret-decrypt ≡
+#   secret-keydir.mjs is the SHARED keydir rule both of the others import — it is a hard runtime
+#   secret-keydir-selftest.sh (the adopter-path / one-keydir-everywhere walk) and
+#   Selftests never travel (boot-checks rule); they are wired via lefthook pre-push.
+#   server is how a stale server 404s a fresh deck. Per-instance data still never travels:
+#   server.py over 19 environment cells) — stay out for the same reason as every other suite (test
+#   session-run.sh runtime-sources bridge-reap.sh (bash -n gated; absent/broken → a no-op stub,
+#   set out to kill, and R3's whole point is that origin's improvement flows in ONCE.
+#    ~/ship-<ver>.sh from this: preview by default, --push to fast-forward main + push the tag).
+#    SKILL reads a repo's existing crew via `map` and gates gap-fill proposals via `validate-plan`) ─
+#   so a determined actor who rewrites core files could regenerate the lock; this stops
+#   So a hand-edit to the turnkey / manifest / changelog in an adopter's core checkout
+#   something that cannot run there. They run in kickoff's own maintainer-only lefthook.yml, and the
+#   split the .claude/ side ships (planner before build, builder implements, reviewer breaks,
+#   (state survives; conversations don't), and only marks done when an EXECUTOR-RUN
+#   stays maintainer-only: adopters get the wiring pre-baked in supervisor.sh, so they never need
+#   suites never travel, see the boot-checks block below), and concretely: both keydir suites drive
+# ── supervisor auth self-heal (inert-by-default; armed via KICKOFF_AUTH_HEAL in instance.env) ──
+#   supervisor.sh runtime-sources auth-heal.sh (fail-open stub if absent) and session-run.sh
+#    sync-seams' seam_template_for() reads it from the PINNED CORE CLONE — brownfield-devex, 2026-08-17,
+#   take back: a private project name or a machine path, at the moment it is written. Added-lines
+# ── telegram-channel reap-on-startup (v0.6 hardening; default-on, KICKOFF_BRIDGE_REAP=0 disables) ──
+#    template below, not from scripts/templates/; travels+pins per tag, and sync-seams regenerates it
+#   test. It separates the MEMORY half from the ENGINE half. Absence-skips when
+#   that routes everything + the boards it serves were not — pinning a deck without its
+# ── the adopter UPGRADE-TURNKEY template (gen-upgrade-turnkey renders the operator's one-tap
+#   (the boot-checks block), and its fixtures copy THIS repo's wiring — nothing for an adopter
+# ── the boot checks (core-v0.10 · crew cadence added core-v0.16) ────────────────
+#   The CORE files that travel via `kickoff pull`: pulled from a pinned git tag into
+#   The engine is abstracted; it must work equally well on every supported engine, and a gap is
+#   the evidence-bound bookkeeping pair (remote read-back; done-words need evidence).
+#   the fat-finger, not a targeted attacker.)
+#   The five .opencode/agent/*.md charters ARE the crew on the opencode engine — the same
+# ── the function-agent charter template (every new agent is authored from it) ───
+# ── the generic, language-agnostic scanners (quality machinery) ─────────────────
+#   the headless worker execs it via `--plugin-dir`. Listed here so the plugin TRAVELS with the tag
+#   The heavy memory-retrieval/ engine is NOT bundled: the thin plugin/hooks/memory-hook.sh REFERENCES
+# the hook runner adopt/doctor install when no lefthook binary exists — without it the
+#   Their *-selftest.sh suites are deliberately absent: test suites never travel.
+# ── the .kickoff/.gitignore SEAM template (gen-gitignore writes .kickoff/.gitignore from this;
+# ── the .kickoff/README SEAM template (gen-readme writes .kickoff/README from this — the human-
+# ── the lane feature pack: watchable, proof-verified background work (2026-08-28) ──
+#   them: a future tag that drops or renames one fails the pull loudly instead of leaving
+#   The opencode-native workflow layer. A dispatched lane = own worktree + serve session
+# ── the opencode wiring: charters + plugins + the adopter config (2026-08-28) ──
+# ── the origin-is-not-the-deployment gate: A DELIBERATE ABSENCE ────────────────
+#   The plugin lives at ~/kickoff-core/plugin/ in the pulled clone. `kickoff adopt` registers it as
+# ── the pull mechanism itself (self-pinned) ─────────────────────────────────────
+# ── the RELEASE SHIP-TURNKEY template (gen-ship-turnkey renders the operator's one-tap
+# ── the reporting-canon output style (gen-output-style writes .claude/output-styles/plain-report.md
+#   the retrofit installer.
+#   the same discipline as auth-heal.sh above) to free THIS project's getUpdates slot from a
+#   These are NOT here because a pull would otherwise miss them — `kickoff pull` full-clones
+# ── the secrets channel: E2E operator → coordinator handover (core-v0.17) ──────
+#   These MUST ship: the re-ground prompt in scripts/session-run.sh (core, above) names
+#   the shared snapshot renderer; lanes-board.sh serves a phone-first live board
+#   The shipped plugin/.mcp.json forces the ANGLE GL backend and keeps a software fallback, so eyes
+#   The single-service counterpart to ingress.sh's multi-service funnel: checks Funnel enablement +
+# ── the skill template (a distilled recurring procedure is authored from it) ────
+# ── the split-charter SEAM template (gen-charter writes .kickoff/KICKOFF.md from this; it
+#   The thing that DOES protect adopters is the gate's OUTPUT: the corrected plugin/skills/**/*.md,
+#   The three suites that cover this channel — secret-box-keygen-selftest.sh,
+# ── the universe deck's baked default theme (template→seam: `adopt` seeds the editable
+#   They are PULLED-AND-PINNED — NEVER hand-edited in an adopter. preflight check #6
+#   they travel. memory-supersede-check.sh rides along as the third
+#   this is how they find out which one they got. Ships because an adopter's live config is the
+# ── Tier-1 public sharing: the zero-spend Tailscale Funnel enablement turnkey (v0.5 G3) ──
+#   to run. It is wired via lefthook.yml's pre-push, the only discovery path that matters.
+TRACKER-ARCHIVE.md
+#    travels+pins so each tag defines its own charter, and sync-seams regenerates it on pull) ─
+#    travels+pins so each tag defines the ignore set, and sync-seams regenerates it on pull) ─
+#    ~/upgrade-<adopter>-to-<ver>.sh from this). NOT a seam: it lands in $HOME, never in the
+#    Upstream layout preserved so the addons' relative imports resolve unchanged; served
+#    uses (three@0.160.0 from the integrity-verified npm tarball; see PROVENANCE.md).
+#        VACUOUSLY — a green on a world nobody lives in, which is worse than not running.
+#   vanished. secret-encrypt.mjs is the browser-mirror used only by the selftest — it stays out.
+# ── vendored Three.js (core-v0.4 S5) — the EXACT transitive import closure universe.html
+#   VERIFIED-stale holder before claude spawns — so it must travel, or a pulled session-run.sh
+#   Visibility travels with it: /lanes (command + plugin tool) renders the fleet from
+# WHAT DOES NOT TRAVEL (instance data — per-adopter, stays local)
+# WHAT THESE ARE
+#   which already travel (see §5 THE PLUGIN below).
+#   whose $KICKOFF_CORE_DIR is a checkout of the public tag — the path did not exist at all. Listing
+#   whose core lacks them boots pointed at absent files. The prompt and these scripts come
+#   work everywhere and are ~15x cheaper where there is a GPU (measured: 9.1 cores vs 0.6 on one 3D
+#    would make preflight #8 hash a repo file that never exists → a fail-closed brick on EVERY

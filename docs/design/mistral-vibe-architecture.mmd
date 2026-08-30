@@ -1,0 +1,16 @@
+flowchart TD
+  P["📱 Phone"] <--> TG["Telegram Bot API"]
+  TG <--> R["kickoff-router<br/>(the new build)"]
+  SUP["supervisor.sh"] -->|spawn / refresh| R
+  MEM[("memory/")] --> R
+  TRK[("mission-state.json")] --> R
+  R -->|"1 · context/inject<br/>THE GAP BRIDGED"| AS
+  R -->|"2 · turn/start · steer · interrupt"| AS["vibe-app-server<br/>JSON-RPC / stdio"]
+  AS -->|"callback/call → approve?"| R
+  AS --> S["root session<br/>coordinator"]
+  S --> C["child sessions<br/>specialists (depth 1)"]
+  HK[".vibe/hooks.toml<br/>pre_tool · post_tool · post_agent"] -.-> S
+  S --> MC["Mission Control"]
+
+  style R fill:#1f4e5f,color:#fff
+  style AS fill:#2d3748,color:#fff

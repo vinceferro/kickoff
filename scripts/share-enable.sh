@@ -23,6 +23,8 @@
 #
 #   bash scripts/share-enable.sh              # check + report (default funnel port 8443)
 #   SHARE_FUNNEL_PORT=10000 bash scripts/share-enable.sh
+#   SHARE_FUNNEL_PORT=8443 SHARE_UPSTREAM=http://127.0.0.1:5173 bash scripts/share-enable.sh
+#                                             # pre-start OCCUPANCY gate (the preview `share` step)
 #
 # Env overrides:
 #   TS_BIN             (tailscale)   — tailscale binary (selftest points this at a stub)
@@ -30,14 +32,22 @@
 #                                      Funnel allows ONLY 443 / 8443 / 10000. 443 is usually the box's
 #                                      primary front door (an ingress/serve already owns it) — 8443 or
 #                                      10000 are the safe picks for a friend-link.
+#   SHARE_UPSTREAM     (unset)       — the local upstream you intend to funnel (http://127.0.0.1:<p>).
+#                                      When set, the ENABLED branch checks port OCCUPANCY: tailscale
+#                                      serve/funnel is SET-not-APPEND (re-pointing a mapped port
+#                                      silently REPLACES its handler), so a target port owned by a
+#                                      DIFFERENT upstream is a HARD-STOP (exit 7) naming the owner —
+#                                      never a green light onto someone else's live app.
 #
-# Exit codes (consumed by the preview `share` step + share-selftest.sh):
+# Exit codes (consumed by the preview `share` step + share-selftest.sh + share-occupancy-selftest.sh):
 #   0  Funnel ENABLED — ready to share; the public URL base is surfaced
 #   2  Funnel NOT enabled — the one-time consent turnkey is relayed (human taps once)
 #   3  operator/permission gap — the `sudo tailscale set --operator=$USER` one-liner is surfaced
 #   4  tailscale not installed — install guidance surfaced
 #   5  tailscale not up / not logged in — `tailscale up` guidance surfaced
 #   6  MagicDNS precondition unmet (no <host>.ts.net name) — enable guidance surfaced
+#   7  target funnel port OCCUPIED by a different upstream — refused; owner named, free-port or
+#      box-ingress steer surfaced (requires SHARE_UPSTREAM to prove the owner is not us)
 #   1  usage / unexpected
 set -uo pipefail
 
@@ -69,6 +79,20 @@ esac
 # The public URL for a funnel on $SHARE_FUNNEL_PORT at MagicDNS name $1 (443 → no port suffix).
 public_url(){
   if [ "$SHARE_FUNNEL_PORT" = "443" ]; then printf 'https://%s' "$1"; else printf 'https://%s:%s' "$1" "$SHARE_FUNNEL_PORT"; fi
+}
+
+# The upstream currently mapped at https://…:<port> in the live serve table ('' = port free).
+# Reads $fn_out — `tailscale funnel status` prints the FULL serve table (funnel AND tailnet-only
+# blocks; a `serve status` call would trip share-selftest's mutation stub, and is redundant anyway).
+# Blocks look like `https://host[:port][/]  (Funnel on|tailnet only)` then `|-- …` handler lines;
+# a portless block header is :443.
+port_owner(){  # $1=funnel port
+  printf '%s\n' "$fn_out" | awk -v port="$1" '
+    /^https:\/\// { p = 443
+      if (match($1, /:[0-9]+\/?$/)) { p = substr($1, RSTART + 1); sub(/\//, "", p) }
+      inblk = (p == port); next }
+    inblk && /^[[:space:]]*\|--/ { sub(/^[[:space:]]*\|-- */, ""); print; exit }
+  '
 }
 
 # The operator one-liner (surfaced, NEVER run — a script must not change tailscale ownership).
@@ -131,13 +155,50 @@ if printf '%s' "$st_out" | jq -e \
   # ── ENABLED ──────────────────────────────────────────────────────────────────────────────────
   ok "Funnel is ENABLED for this node — you can share a PUBLIC link (free, zero-spend)."
   echo
+  # OCCUPANCY gate (read-only; adopter clobber fix). Legality (443|8443|10000) is not enough:
+  # serve/funnel is SET-not-APPEND, so starting a share on a port a DIFFERENT upstream already owns
+  # would silently REPLACE that mapping and darken the live app behind it. With the intent declared
+  # (SHARE_UPSTREAM), an occupied-by-other target port is a HARD-STOP, never a green light.
+  fn_out="$("$TS_BIN" funnel status 2>/dev/null)"
+  owner="$(port_owner "$SHARE_FUNNEL_PORT")"
+  # Compare the occupant's ACTUAL upstream to ours by EXACT match, not substring: `grep -F :5173`
+  # also matches an occupant on :51730 (prefix collision) and would green-light the very
+  # SET-not-APPEND clobber this gate exists to refuse. Extract the http(s):// token from the owner
+  # line and equality-test (one trailing slash normalized on each side). An owner whose upstream we
+  # can't parse is treated as "not us" → hard-stop (fail-closed).
+  owner_up="$(printf '%s\n' "$owner" | grep -oE 'https?://[^[:space:]]+' | head -1 | sed 's:/*$::')"
+  want_up="$(printf '%s\n' "${SHARE_UPSTREAM:-}" | sed 's:/*$::')"
+  if [ -n "$owner" ] && [ -n "${SHARE_UPSTREAM:-}" ] && [ "$owner_up" != "$want_up" ]; then
+    warn "funnel port :$SHARE_FUNNEL_PORT is ALREADY TAKEN — current owner:  $owner"
+    info "tailscale serve/funnel is SET-not-APPEND: starting your share here would silently REPLACE"
+    info "that mapping and darken whatever is behind it. NOT proceeding."
+    echo
+    alt=""
+    for p in 8443 10000; do   # 443 is never suggested — it is the box's primary front door
+      [ "$p" = "$SHARE_FUNNEL_PORT" ] && continue
+      [ -z "$(port_owner "$p")" ] && { alt="$p"; break; }
+    done
+    if [ -n "$alt" ]; then
+      info "free funnel port: $alt — re-run with SHARE_FUNNEL_PORT=$alt and share there instead."
+    else
+      info "every safe funnel port (8443, 10000) is taken — and 443 is the box's front door. Do NOT"
+      info "clobber one: route this app through the box-ingress instead (scripts/ingress.sh"
+      info "path-routing — the preview skill's Tier 2 — it shares the existing :443 funnel)."
+    fi
+    exit 7
+  fi
   echo "  Your friend-openable link will live under:"
   info "$(public_url "$dns")/…"
   info "(this is the PUBLIC funnel base — anyone with the link opens it, no tailnet needed.)"
   # Best-effort: if a funnel is ALREADY live, surface its actual URL too (read-only status).
-  fn_out="$("$TS_BIN" funnel status 2>/dev/null)"
   if live="$(printf '%s' "$fn_out" | grep -oE 'https://[a-zA-Z0-9._-]+\.ts\.net(:[0-9]+)?' | head -1)" && [ -n "$live" ]; then
     echo; ok "a funnel is currently LIVE at: $live"
+    # No SHARE_UPSTREAM declared → we cannot prove the owner is (or is not) this share: caution only.
+    if [ -n "$owner" ] && [ -z "${SHARE_UPSTREAM:-}" ]; then
+      warn "note: :$SHARE_FUNNEL_PORT is currently owned by:  $owner"
+      info "starting a NEW share there silently REPLACES it (SET-not-APPEND) — pick a free funnel"
+      info "port unless that owner IS your app."
+    fi
   fi
   echo
   info "reversible teardown (no data loss) when you're done sharing:"

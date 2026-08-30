@@ -1,0 +1,30 @@
+# claude-kickoff .scanignore — paths the scanners skip (one glob per line, with a reason).
+# Only ever add a path with a real reason; never to silence a genuine finding.
+
+# selftest.sh embeds intentional FIXTURES (a fake private key block, an AWS
+# example key id, a USING(true) policy) to prove the scanners catch them — these
+# are test data, not real secrets/footguns.
+scripts/selftest.sh
+
+# auth-heal-selftest.sh drives the auth self-heal with intentional FAKE tokens
+# (TESTTOK-* / sk-ant-oat01-FAKETESTTOKEN* / sk-ant-oat01-STILLBADTOKEN* — hermetic
+# stubs, no real `claude`, no network; the suite even asserts the fake token round-trips)
+# that the scanner's OAuth-prefix rule trips on. Test fixtures, not real secrets.
+scripts/auth-heal-selftest.sh
+
+# shim-env-seal-selftest.sh embeds an intentional FIXTURE AWS key (AKIA…) in a temp foreign
+# repo to prove the scanner's fail-closed + GIT_DIR-seal behavior catches a real secret through
+# a shim. Same class as selftest.sh above — test data, not a real secret; the whole point of the
+# file is to exercise the secret gate. (Verified: only the AKIA fixture, no real credential.)
+scripts/shim-env-seal-selftest.sh
+
+# adopt-preview.html is a 3.5 MB BUNDLED artifact (one 324k-char minified line), not source.
+# The generic "hardcoded credential literal" rule matches minified assignments like x="…"+n+"…"
+# 36 times, and the complex-regex pass can hang on the long line. Verified 2026-07-22 to contain
+# ZERO high-signal secrets (BEGIN PRIVATE KEY / AKIA / sk_live_ / ghp_ / sk-ant- / xoxb- / AIza
+# all count 0). Excluded as a build artifact — NOT to silence a genuine finding.
+mission-control/experiments/adopt-preview.html
+# Same class, same verification (2026-07-22): a 3.4 MB bundle, one 302k-char line, ZERO
+# high-signal secrets. Listed per-FILE, deliberately not `experiments/*` — that dir also holds
+# real hand-written .mjs sources which must stay scanned.
+mission-control/experiments/adoption-story-preview.html

@@ -337,8 +337,34 @@ chk "marketplace.json parses + name==kickoff-local + lists the kickoff plugin" \
   "python3 -c \"import json;d=json.load(open('$PLUGIN/.claude-plugin/marketplace.json'));assert d['name']=='kickoff-local';assert any(p['name']=='kickoff' for p in d['plugins'])\""
 chk "hooks/hooks.json declares a UserPromptSubmit command hook via \${CLAUDE_PLUGIN_ROOT}" \
   "python3 -c \"import json;d=json.load(open('$PLUGIN/hooks/hooks.json'));h=d['hooks']['UserPromptSubmit'][0]['hooks'][0];assert h['type']=='command' and 'CLAUDE_PLUGIN_ROOT' in h['command'] and 'memory-hook.sh' in h['command']\""
+# The agent-mail hook is the SECOND UserPromptSubmit entry, and order matters less than presence:
+# a hook that ships in the manifest but is never declared here is dead weight the adopter carries
+# and nobody fires — the same orphaned-artifact failure the v0.23 suite-discovery note describes.
+chk "hooks/hooks.json ALSO declares the agent-mail per-turn hook" \
+  "python3 -c \"import json;d=json.load(open('$PLUGIN/hooks/hooks.json'));hs=d['hooks']['UserPromptSubmit'][0]['hooks'];assert any(h['type']=='command' and 'CLAUDE_PLUGIN_ROOT' in h['command'] and 'agent-mail-hook.sh' in h['command'] for h in hs)\""
+chk "the agent-mail hook file it points at actually exists in the plugin" \
+  "[ -f '$PLUGIN/hooks/agent-mail-hook.sh' ]"
 chk ".mcp.json declares the chrome-devtools MCP server" \
   "python3 -c \"import json;d=json.load(open('$PLUGIN/.mcp.json'));assert 'chrome-devtools' in d['mcpServers']\""
+# PAIRED-FLAG INVARIANT — forcing the ANGLE backend REMOVES Chrome's automatic software-WebGL
+# fallback (Chrome deprecated the implicit path; its own console warning names the opt-in flag).
+# Measured 2026-07-29: `--use-gl=angle --use-angle=gl-egl` alone gives this box's RTX 3080 Ti and
+# drops a 3D page from 9.1 cores to 0.6 — but on a machine with no NVIDIA EGL vendor library it
+# leaves getContext('webgl') returning NULL, i.e. WebGL is not slow, it is GONE. Adding
+# --enable-unsafe-swiftshader restores the software path, so the same config is fast where there is
+# a GPU and merely slow where there is not. This is a SHIPPED config on unknown adopter hardware,
+# so the two flags must never be separated by a future edit.
+# BOTH configs took the identical edit, so both need the guard: the shipped plugin one protects
+# adopters, the repo-root one protects this engine checkout's own eyes. Guarding only the first
+# would let the second drift silently — and the second is what THIS crew renders with.
+for _mcp in "$PLUGIN/.mcp.json" "$REPO/.mcp.json"; do
+  [ -f "$_mcp" ] || continue
+  chk "★ $(basename "$(dirname "$_mcp")")/.mcp.json: forcing ANGLE is paired with the software-WebGL fallback" \
+    "python3 -c \"
+import json,sys
+a=' '.join(json.load(open('$_mcp'))['mcpServers']['chrome-devtools']['args'])
+sys.exit(0 if ('use-angle' not in a) or ('enable-unsafe-swiftshader' in a) else 1)\""
+done
 chk "memory-hook.sh is executable (owner +x; umask-robust)" \
   "[ -x '$PLUGIN/hooks/memory-hook.sh' ]"
 
@@ -353,7 +379,7 @@ chk "memory-hook.sh fails-OPEN with no CLAUDE_PROJECT_DIR (exit 0, no output)" \
   "OUT=\$(env -u CLAUDE_PROJECT_DIR bash '$PLUGIN/hooks/memory-hook.sh' </dev/null 2>&1); RC=\$?; [ \$RC -eq 0 ] && [ -z \"\$OUT\" ]"
 
 # the generic skill + agent set travels in the plugin
-for s in scan review harden preview bootstrap adopt plugins mission-control crew-review setup; do
+for s in scan review harden preview bootstrap adopt plugins mission-control mc-report crew-review setup agent-mail; do
   chk "plugin skill present: $s" "[ -f \"$PLUGIN/skills/$s/SKILL.md\" ]"
 done
 for a in planner builder reviewer deployer; do
@@ -372,29 +398,39 @@ chk "memory-retrieval/hook.mjs is NOT bundled in the plugin (single-sourced, dec
   "[ ! -e \"$PLUGIN/memory-retrieval\" ]"
 
 # ── the two session-run.sh argv assertions (the ⚠ dogfood-safety correction) ──
-# A stub `claude` on PATH records the exec'd argv to a log; _PTY_WRAPPED=1 skips the pty re-exec so
-# session-run reaches the exec. env -u strips ambient PERMISSION_MODE/EFFORT/MODEL for determinism.
+# A stub `claude` on PATH records the exec'd argv to a log. Each invocation runs under script(1)
+# so session-run's stdin IS a pty and its TTY-detect wrap (v0.7 G1 §2.4: decided by [ -t 0 ],
+# never by an inheritable env var) skips naturally — session-run reaches the exec with no
+# re-wrap and no keepalive spawned. env -u strips ambient PERMISSION_MODE/EFFORT/MODEL for determinism,
+# and (core-v0.39) WORKER_ENGINE + OPENCODE_MODEL_* too: these lanes assert CLAUDE-path argv
+# construction specifically, and this box now legitimately runs WORKERS on either engine — an
+# opencode-engine coordinator's shell exports WORKER_ENGINE=opencode, which without the strip
+# dispatches session-run down the opencode path (credential FATAL, stub never exec'd) and turns
+# every presence-lane red / absence-lane vacuously green. The lanes OWN their engine input.
 SR="$(mk)"; SRSTUB="$(mk)"; write_stub_claude "$SRSTUB"
 mkdir -p "$SR/fix/.kickoff" "$SR/core/plugin"
 # origin-shaped: no KICKOFF_CORE_DIR → argv must gain NO --plugin-dir (origin stays INERT)
 env -u KICKOFF_CORE_DIR -u PERMISSION_MODE -u EFFORT -u MODEL -u CLAUDE_CONFIG_DIR \
-    CLAUDE_STUB_LOG="$SR/argv_origin.log" _PTY_WRAPPED=1 REPO_DIR="$SR/fix" \
+    -u WORKER_ENGINE -u OPENCODE_MODEL_PROVIDER -u OPENCODE_MODEL_ID \
+    CLAUDE_STUB_LOG="$SR/argv_origin.log" REPO_DIR="$SR/fix" \
     TELEGRAM_STATE_DIR="$SR/fix/.kickoff/chan" PATH="$SRSTUB:$PATH" \
-    bash "$REPO/scripts/session-run.sh" </dev/null >/dev/null 2>&1 || true
+    script -qfe -c "bash '$REPO/scripts/session-run.sh'" /dev/null </dev/null >/dev/null 2>&1 || true
 chk "session-run argv (origin-shaped, no KICKOFF_CORE_DIR): NO --plugin-dir (origin INERT)" \
   "! grep -q -- '--plugin-dir' \"$SR/argv_origin.log\""
 # adopter-shaped: KICKOFF_CORE_DIR set + $KICKOFF_CORE_DIR/plugin exists → argv gains --plugin-dir <dir>
 env -u PERMISSION_MODE -u EFFORT -u MODEL -u CLAUDE_CONFIG_DIR \
-    CLAUDE_STUB_LOG="$SR/argv_adopter.log" _PTY_WRAPPED=1 REPO_DIR="$SR/fix" \
+    -u WORKER_ENGINE -u OPENCODE_MODEL_PROVIDER -u OPENCODE_MODEL_ID \
+    CLAUDE_STUB_LOG="$SR/argv_adopter.log" REPO_DIR="$SR/fix" \
     TELEGRAM_STATE_DIR="$SR/fix/.kickoff/chan" KICKOFF_CORE_DIR="$SR/core" PATH="$SRSTUB:$PATH" \
-    bash "$REPO/scripts/session-run.sh" </dev/null >/dev/null 2>&1 || true
+    script -qfe -c "bash '$REPO/scripts/session-run.sh'" /dev/null </dev/null >/dev/null 2>&1 || true
 chk "session-run argv (adopter-shaped, KICKOFF_CORE_DIR+plugin/): --plugin-dir \$KICKOFF_CORE_DIR/plugin" \
   "grep -q -- '--plugin-dir' \"$SR/argv_adopter.log\" && grep -qF '$SR/core/plugin' \"$SR/argv_adopter.log\""
 # adopter-shaped but plugin/ MISSING → still NO --plugin-dir (the gate needs the dir to EXIST)
 env -u PERMISSION_MODE -u EFFORT -u MODEL -u CLAUDE_CONFIG_DIR \
-    CLAUDE_STUB_LOG="$SR/argv_noplug.log" _PTY_WRAPPED=1 REPO_DIR="$SR/fix" \
+    -u WORKER_ENGINE -u OPENCODE_MODEL_PROVIDER -u OPENCODE_MODEL_ID \
+    CLAUDE_STUB_LOG="$SR/argv_noplug.log" REPO_DIR="$SR/fix" \
     TELEGRAM_STATE_DIR="$SR/fix/.kickoff/chan" KICKOFF_CORE_DIR="$SR/fix" PATH="$SRSTUB:$PATH" \
-    bash "$REPO/scripts/session-run.sh" </dev/null >/dev/null 2>&1 || true
+    script -qfe -c "bash '$REPO/scripts/session-run.sh'" /dev/null </dev/null >/dev/null 2>&1 || true
 chk "session-run argv (KICKOFF_CORE_DIR set but no plugin/): NO --plugin-dir (strict gate)" \
   "! grep -q -- '--plugin-dir' \"$SR/argv_noplug.log\""
 # Fix 5 (RED on pre-fix): a SELF-REFERENTIAL origin — KICKOFF_CORE_DIR == REPO_DIR (supervisor.sh:60
@@ -403,9 +439,10 @@ chk "session-run argv (KICKOFF_CORE_DIR set but no plugin/): NO --plugin-dir (st
 # hook double-fire + MCP re-declaration). Pre-fix's presence-only gate added --plugin-dir the moment
 # KICKOFF_CORE_DIR was set = REPO_DIR → the origin would self-load the plugin (RED on pre-fix).
 env -u PERMISSION_MODE -u EFFORT -u MODEL -u CLAUDE_CONFIG_DIR \
-    CLAUDE_STUB_LOG="$SR/argv_selforigin.log" _PTY_WRAPPED=1 REPO_DIR="$SR/core" \
+    -u WORKER_ENGINE -u OPENCODE_MODEL_PROVIDER -u OPENCODE_MODEL_ID \
+    CLAUDE_STUB_LOG="$SR/argv_selforigin.log" REPO_DIR="$SR/core" \
     TELEGRAM_STATE_DIR="$SR/fix/.kickoff/chan" KICKOFF_CORE_DIR="$SR/core" PATH="$SRSTUB:$PATH" \
-    bash "$REPO/scripts/session-run.sh" </dev/null >/dev/null 2>&1 || true
+    script -qfe -c "bash '$REPO/scripts/session-run.sh'" /dev/null </dev/null >/dev/null 2>&1 || true
 chk "session-run argv (SELF-REFERENTIAL origin, KICKOFF_CORE_DIR==REPO_DIR w/ plugin/): NO --plugin-dir [Fix 5, RED on pre-fix]" \
   "! grep -q -- '--plugin-dir' \"$SR/argv_selforigin.log\""
 
@@ -415,15 +452,17 @@ chk "session-run argv (SELF-REFERENTIAL origin, KICKOFF_CORE_DIR==REPO_DIR w/ pl
 # downgrade the live coordinator). Same argv-recording harness; origin-shaped fixture (no --plugin-dir
 # noise). `-u MODEL` strips ambient MODEL so the unset case is deterministic; the set case then sets it.
 env -u KICKOFF_CORE_DIR -u PERMISSION_MODE -u EFFORT -u MODEL -u CLAUDE_CONFIG_DIR \
-    CLAUDE_STUB_LOG="$SR/argv_model_unset.log" _PTY_WRAPPED=1 REPO_DIR="$SR/fix" \
+    -u WORKER_ENGINE -u OPENCODE_MODEL_PROVIDER -u OPENCODE_MODEL_ID \
+    CLAUDE_STUB_LOG="$SR/argv_model_unset.log" REPO_DIR="$SR/fix" \
     TELEGRAM_STATE_DIR="$SR/fix/.kickoff/chan" PATH="$SRSTUB:$PATH" \
-    bash "$REPO/scripts/session-run.sh" </dev/null >/dev/null 2>&1 || true
+    script -qfe -c "bash '$REPO/scripts/session-run.sh'" /dev/null </dev/null >/dev/null 2>&1 || true
 chk "session-run argv (MODEL unset): NO --model (inherit box config, exec byte-unchanged)" \
   "! grep -q -- '--model' \"$SR/argv_model_unset.log\""
 env -u KICKOFF_CORE_DIR -u PERMISSION_MODE -u EFFORT -u MODEL -u CLAUDE_CONFIG_DIR \
-    CLAUDE_STUB_LOG="$SR/argv_model_set.log" _PTY_WRAPPED=1 REPO_DIR="$SR/fix" \
+    -u WORKER_ENGINE -u OPENCODE_MODEL_PROVIDER -u OPENCODE_MODEL_ID \
+    CLAUDE_STUB_LOG="$SR/argv_model_set.log" REPO_DIR="$SR/fix" \
     TELEGRAM_STATE_DIR="$SR/fix/.kickoff/chan" MODEL="sonnet" PATH="$SRSTUB:$PATH" \
-    bash "$REPO/scripts/session-run.sh" </dev/null >/dev/null 2>&1 || true
+    script -qfe -c "bash '$REPO/scripts/session-run.sh'" /dev/null </dev/null >/dev/null 2>&1 || true
 chk "session-run argv (MODEL=sonnet): --model sonnet present in the exec'd argv" \
   "grep -qE -- '--model[[:space:]]+sonnet' \"$SR/argv_model_set.log\""
 echo
@@ -504,6 +543,13 @@ build_fake_core() {   # echoes the core path
   # regenerates it and _read_file_seam_template FATALs without the pinned template here.
   cp "$REPO/scripts/templates/kickoff.gitignore"  "$core/scripts/templates/kickoff.gitignore"
   cp "$REPO/scripts/templates/kickoff-README.md"  "$core/scripts/templates/kickoff-README.md"
+  # brownfield-devex: the reporting-canon output-style seam (gen-output-style) is read directly from
+  # the CORE ROOT (.claude/output-styles/plain-report.md — the _AGENT_CHARTER_TEMPLATE idiom, NOT
+  # scripts/templates/), and it is class=seam → sync-seams' seam_template_for() reads it from THIS
+  # pinned core clone on every `kickoff pull`. Without it here, sync-seams FATALs mid-pull (caught by
+  # this suite itself, 2026-08-17) — same failure mode the gitignore/README comment above describes.
+  mkdir -p "$core/.claude/output-styles"
+  cp "$REPO/.claude/output-styles/plain-report.md" "$core/.claude/output-styles/plain-report.md"
   # the scan-shim engine targets (the scan-secrets/scan-structure seam shims exec these from the core);
   # stubs suffice — no test execs them, they just satisfy the pinned-core existence guard.
   printf '#!/usr/bin/env bash\n# fake core scan-secrets (stub)\nexit 0\n'   > "$core/scripts/scan-secrets.sh";   chmod +x "$core/scripts/scan-secrets.sh"
@@ -516,6 +562,7 @@ scripts/scan-structure.sh
 scripts/templates/KICKOFF.md
 scripts/templates/kickoff.gitignore
 scripts/templates/kickoff-README.md
+.claude/output-styles/plain-report.md
 scripts/core-manifest.txt
 CORE-CHANGELOG.md
 plugin/.claude-plugin/plugin.json
@@ -567,7 +614,7 @@ EOF
   # (Fix 1b) registers this adopter in the machine registry. KICKOFF_ADOPTERS_REGISTRY isolates that
   # registration to a scratch file — NEVER the operator's real ~/.kickoff/adopters.json.
   KICKOFF_ADOPTERS_REGISTRY="$reg" KICKOFF_CORE_DIR="$clone" CLAUDE_CONFIG_DIR="$cfg" PATH="$stub:$PATH" \
-    bash "$KICKOFF" adopt --dir "$adopter" >/dev/null 2>&1 || true
+    bash "$KICKOFF" adopt --dir "$adopter" --accept </dev/null >/dev/null 2>&1 || true
   cp "$adopter/.claude/settings.local.json" "$snap/settings.local.json"
   cp "$adopter/CLAUDE.md"                    "$snap/CLAUDE.md"
   cp "$adopter/src/app.txt"                  "$snap/app.txt"
@@ -648,7 +695,7 @@ export MEMORY_DB="$LC/.kickoff/state/memory-index.db"
 export MEMORY_HOOK_LOG="$LC/.kickoff/state/memory-hook.log"
 EOF
 KICKOFF_ADOPTERS_REGISTRY="$LCREG" KICKOFF_CORE_DIR="$LCCLONE" CLAUDE_CONFIG_DIR="$LCCFG" PATH="$LCSTUB:$PATH" \
-  bash "$KICKOFF" adopt --dir "$LC" >/dev/null 2>&1 || true
+  bash "$KICKOFF" adopt --dir "$LC" --accept </dev/null >/dev/null 2>&1 || true
 LCMAN="$LC/.kickoff/adopt-manifest.json"
 chk "2a: adopt CREATED .claude/settings.json (no pre-existing) carrying the two plugin keys" \
   "[ -f \"$LC/.claude/settings.json\" ] && jq -e '.extraKnownMarketplaces[\"kickoff-local\"] and .enabledPlugins[\"kickoff@kickoff-local\"]==true' \"$LC/.claude/settings.json\" >/dev/null"
@@ -668,7 +715,10 @@ echo "2b. Fix 3 — partial adopt (marketplace-add ok, install FAILS) rolls back
 # pre-fix code returned having recorded NOTHING → that edit was ORPHANED + unrecorded → eject (manifest
 # -driven) could never reverse it → `git status` showed ` M .claude/settings.json`. The fix byte-
 # restores settings.json on the install-failure branch. Stub here: add writes settings.json, install
-# exits 1. RED on pre-fix (settings.json left dirty + the orphaned key survives).
+# exits 1. RED on pre-fix (settings.json left dirty + the orphaned key survives). (brownfield-devex:
+# the reporting-canon step still independently merges its own outputStyle key afterward — see the
+# note at the assertions below — so settings.json is no longer byte-identical post-adopt, but the
+# ORIGINAL invariant this test protects, no orphaned PLUGIN key survives a failed install, still holds.)
 F3ADOPTER="$(mk)"; F3CLONE="$(mk)"; F3CFG="$(mk)"; F3STUB="$(mk)"; F3REG="$(mk)/adopters.json"
 git clone -q "$FCORE" "$F3CLONE"; git -C "$F3CLONE" checkout -q --detach core-vA
 mkdir -p "$F3ADOPTER/.claude" "$F3ADOPTER/.kickoff/state" "$F3ADOPTER/memory"
@@ -713,15 +763,28 @@ sys.exit(0)   # marketplace remove (the rollback's tidy step) etc. → no-op suc
 PYEOF
 chmod +x "$F3STUB/claude"
 KICKOFF_ADOPTERS_REGISTRY="$F3REG" KICKOFF_CORE_DIR="$F3CLONE" CLAUDE_CONFIG_DIR="$F3CFG" PATH="$F3STUB:$PATH" \
-  bash "$KICKOFF" adopt --dir "$F3ADOPTER" >/dev/null 2>&1 || true
-chk "Fix3: after a failed install, .claude/settings.json is BYTE-RESTORED to pre-adopt (cmp -s) [RED on pre-fix]" \
-  "cmp -s \"$F3PRE\" \"$F3ADOPTER/.claude/settings.json\""
-chk "Fix3: settings.json is NOT left modified in git (no orphaned edit) [RED on pre-fix]" \
-  "[ -z \"\$(git -C \"$F3ADOPTER\" status --porcelain -- .claude/settings.json)\" ]"
+  bash "$KICKOFF" adopt --dir "$F3ADOPTER" --accept </dev/null >/dev/null 2>&1 || true
+# NOTE (brownfield-devex): the reporting-canon step (_adopt_wire_output_style) runs AFTER the plugin
+# step and is INDEPENDENT of it — it still merges its own \`outputStyle\` key even when the plugin
+# install above failed and rolled back. So settings.json is no longer byte-IDENTICAL to pre-adopt —
+# but the invariant this test exists to protect (no ORPHANED PLUGIN edit survives a failed install)
+# still holds exactly: the operator's original keys are untouched and NEITHER plugin key appears.
+chk "Fix3: the operator's original permissions key SURVIVES a failed install untouched" \
+  "[ \"\$(jq -c '.permissions' "$F3ADOPTER/.claude/settings.json")\" = '{\"allow\":[\"Bash(ls:*)\"]}' ]"
 chk "Fix3: no orphaned extraKnownMarketplaces key survived the failed adopt [RED on pre-fix]" \
   "! jq -e '.extraKnownMarketplaces' \"$F3ADOPTER/.claude/settings.json\" >/dev/null 2>&1"
-chk "Fix3: the manifest recorded NO settings.json entry (nothing left to reverse — it was rolled back)" \
-  "! python3 -c \"import json;m=json.load(open('$F3ADOPTER/.kickoff/adopt-manifest.json'));assert any(e['path']=='.claude/settings.json' for e in m.get('entries',[]))\" 2>/dev/null"
+chk "Fix3: no orphaned enabledPlugins key survived the failed adopt [RED on pre-fix]" \
+  "! jq -e '.enabledPlugins' \"$F3ADOPTER/.claude/settings.json\" >/dev/null 2>&1"
+chk "Fix3: the independent outputStyle merge STILL landed (a failed plugin install must not block it)" \
+  "[ \"\$(jq -r '.outputStyle' "$F3ADOPTER/.claude/settings.json")\" = 'Plain Report' ]"
+chk "Fix3: the manifest recorded EXACTLY ONE settings.json entry — the outputStyle merge, never the rolled-back plugin keys" \
+  "python3 -c \"
+import json
+m = json.load(open('$F3ADOPTER/.kickoff/adopt-manifest.json'))
+rows = [e for e in m.get('entries', []) if e['path'] == '.claude/settings.json']
+assert len(rows) == 1, rows
+assert rows[0]['action'] == 'json-merged', rows
+\""
 echo
 
 # ══════════════════════════════════════════════════════════════════════════════════════
@@ -793,7 +856,7 @@ chmod +x "$FAMTBIN/mktemp"
 FA_REAL_MKTEMP="$(command -v mktemp)"
 FAOUT="$(FAKE_REAL_MKTEMP="$FA_REAL_MKTEMP" KICKOFF_ADOPTERS_REGISTRY="$FAREG" KICKOFF_CORE_DIR="$FACLONE" \
   CLAUDE_CONFIG_DIR="$FACFG" PATH="$FAMTBIN:$FASTUB:$PATH" \
-  bash "$KICKOFF" adopt --dir "$FAADOPTER" 2>&1)" || true
+  bash "$KICKOFF" adopt --dir "$FAADOPTER" --accept </dev/null 2>&1)" || true
 chk "FixA: the bare mktemp actually FAILED (capture warned it could not back up settings.json)" \
   "printf '%s' \"\$FAOUT\" | grep -qi 'could not back up the pre-existing'"
 chk "FixA: settings.json SURVIVES the mktemp-fail rollback — NOT deleted [RED on pre-fix: ' D']" \
@@ -1350,7 +1413,7 @@ EOF
 python3 "$RSCLONE/scripts/adopt-manifest.py" gen-charter --repo "$RSADOPTER" --source core-vA >/dev/null
 # adopt@vA (enables the plugin at project scope + records the machine entry + registers this adopter)
 KICKOFF_ADOPTERS_REGISTRY="$RSREG" KICKOFF_CORE_DIR="$RSCLONE" CLAUDE_CONFIG_DIR="$RSCFG" PATH="$RSSTUB:$PATH" \
-  bash "$KICKOFF" adopt --dir "$RSADOPTER" >/dev/null 2>&1 || true
+  bash "$KICKOFF" adopt --dir "$RSADOPTER" --accept </dev/null >/dev/null 2>&1 || true
 # pull core-vB (full plugin lifecycle — mechanism A cache resync). pull's rc is OUT OF SCOPE here (a
 # known preflight papercut) so it is not asserted; the eject byte-restores from the manifest regardless.
 KICKOFF_ADOPTERS_REGISTRY="$RSREG" KICKOFF_CORE_DIR="$RSCLONE" CLAUDE_CONFIG_DIR="$RSCFG" PATH="$RSSTUB:$PATH" \
@@ -1406,7 +1469,7 @@ export MEMORY_HOOK_LOG="$DVADOPTER/.kickoff/state/memory-hook.log"
 EOF
 python3 "$DVCLONE/scripts/adopt-manifest.py" gen-charter --repo "$DVADOPTER" --source core-vA >/dev/null
 KICKOFF_ADOPTERS_REGISTRY="$DVREG" KICKOFF_CORE_DIR="$DVCLONE" CLAUDE_CONFIG_DIR="$DVCFG" PATH="$DVSTUB:$PATH" \
-  bash "$KICKOFF" adopt --dir "$DVADOPTER" >/dev/null 2>&1 || true
+  bash "$KICKOFF" adopt --dir "$DVADOPTER" --accept </dev/null >/dev/null 2>&1 || true
 # OPERATOR EDIT after adopt → settings.json diverges from the recorded json-merged hash (step-4 keeps it).
 python3 - "$DVADOPTER/.claude/settings.json" <<'PY'
 import json, sys
@@ -1495,6 +1558,194 @@ chk "E2E(3) eject: the planted secret SURVIVES in settings.local.json" \
   "grep -qF '$PLANT' \"$E8ADOPTER/.claude/settings.local.json\""
 chk "E2E(3) eject CREDENTIAL-SAFE: the secret is ABSENT from all eject output" \
   "! printf '%s' \"\$E8EOUT\" | grep -qF '$PLANT'"
+echo
+
+# ══════════════════════════════════════════════════════════════════════════════════════
+echo "7. Slice 4 — MC lifecycle hook (spine) + rich mc-report skill (v0.9)"
+# ══════════════════════════════════════════════════════════════════════════════════════
+# The read-side of the brownfield mesh, in TWO plug-and-play layers, NEITHER touching a charter:
+#   (A) the MECHANICAL SPINE — plugin/hooks/mc-hook.sh, wired via hooks.json under SubagentStart +
+#       SubagentStop (wildcard matcher), streams every subagent's allocation (working/done + the
+#       final message) into the ADOPTER's board with ZERO agent-file edits; eject drops the plugin
+#       keys and it stops, clean.
+#   (B) the RICH LAYER — the discoverable mc-report SKILL (byte-mirrored across plugin/ + .claude/)
+#       the agent reaches for at the semantic beats (decision / milestone / completion-with-artifact).
+# The hook is proven against a FIXTURE adopter board in mktemp -d (never the live core board), with
+# the REAL SubagentStop key names, an INJECTION probe, the board-targeting canary, the non-fatality
+# lanes, and a RED-FIRST mutation showing the lane fails on a mis-mapped payload.
+
+# ── (a) hooks.json wires SubagentStart + SubagentStop → mc-hook.sh (wildcard matcher); NOT PostToolUse
+chk "hooks.json: SubagentStart → mc-hook.sh via \${CLAUDE_PLUGIN_ROOT} (wildcard matcher '*')" \
+  "python3 -c \"import json;d=json.load(open('$PLUGIN/hooks/hooks.json'));e=d['hooks']['SubagentStart'][0];h=e['hooks'][0];assert e.get('matcher')=='*';assert h['type']=='command' and 'CLAUDE_PLUGIN_ROOT' in h['command'] and 'mc-hook.sh' in h['command']\""
+chk "hooks.json: SubagentStop → mc-hook.sh via \${CLAUDE_PLUGIN_ROOT} (wildcard matcher '*')" \
+  "python3 -c \"import json;d=json.load(open('$PLUGIN/hooks/hooks.json'));e=d['hooks']['SubagentStop'][0];h=e['hooks'][0];assert e.get('matcher')=='*';assert h['type']=='command' and 'CLAUDE_PLUGIN_ROOT' in h['command'] and 'mc-hook.sh' in h['command']\""
+chk "hooks.json: PostToolUse is NOT wired (MC is signal, not a per-tool play-by-play)" \
+  "python3 -c \"import json;d=json.load(open('$PLUGIN/hooks/hooks.json'));assert 'PostToolUse' not in d['hooks']\""
+chk "mc-hook.sh is present + executable" "[ -x '$PLUGIN/hooks/mc-hook.sh' ]"
+chk "mc-hook.sh NEVER emits a literal 'exit 2' (a Subagent-hook exit 2 BLOCKS the turn)" \
+  "! grep -qE 'exit[[:space:]]+2' '$PLUGIN/hooks/mc-hook.sh'"
+chk "mc-hook.sh routes through the adopter shim (.kickoff/bin/mc), never the bare mc-update.py default" \
+  "grep -qF '.kickoff/bin/mc' '$PLUGIN/hooks/mc-hook.sh' && ! grep -qF 'mission-control/mc-update.py' '$PLUGIN/hooks/mc-hook.sh'"
+
+# ── (b) the rich mc-report skill: present in BOTH trees + BYTE-IDENTICAL + a triggering description
+chk "plugin skill present: mc-report" "[ -f '$PLUGIN/skills/mc-report/SKILL.md' ]"
+chk "mc-report SKILL copies are BYTE-IDENTICAL (plugin/ vs .claude/)" \
+  "cmp -s '$PLUGIN/skills/mc-report/SKILL.md' '$REPO/.claude/skills/mc-report/SKILL.md'"
+
+# ── SKILL PARITY, ALL OF THEM — default-deny, exceptions must be DECLARED ─────────────────────────
+# Until core-v0.16 exactly ONE skill (mc-report, above) was parity-checked, so every other skill could
+# diverge in silence — and adopters run the plugin/ copy, so a divergence means they get something
+# other than what was tested here. It bit for real: the v0.16 candidate carried the gardener rewrite in
+# .claude/skills/crew-review/ while plugin/skills/crew-review/ still held the old text, and it was
+# caught by a hand-run `diff` during the release, not by any gate.
+#
+# Some divergence is INTENTIONAL — the plugin copy ships to adopters, where repo != core, so an
+# origin-only aside is correctly absent there. That is exactly why this is default-deny with a named
+# allow-list: an intentional difference costs one line and a reason here; an accidental one goes RED.
+# To add an exception, state WHY the two copies must differ. If you cannot, they must not.
+_PARITY_EXCEPT=" mission-control "   # plugin copy omits an origin-only "(where repo==core)" aside
+_parity_bad=""; _parity_n=0; _parity_skipped=""
+for _sk in "$REPO"/.claude/skills/*/; do
+  _s="$(basename "$_sk")"
+  [ -f "$PLUGIN/skills/$_s/SKILL.md" ] || continue          # plugin-absent is the shipping-set question, not parity
+  case "$_PARITY_EXCEPT" in *" $_s "*) _parity_skipped="$_parity_skipped $_s"; continue ;; esac
+  _parity_n=$((_parity_n + 1))
+  cmp -s "$_sk/SKILL.md" "$PLUGIN/skills/$_s/SKILL.md" || _parity_bad="$_parity_bad $_s"
+done
+chk "ALL skills present in both trees are BYTE-IDENTICAL (checked:$_parity_n, declared exceptions:${_parity_skipped:- none}) — drift ships adopters something untested${_parity_bad:+ — DIVERGED:$_parity_bad}" \
+  "[ -z '$_parity_bad' ]"
+# Non-vacuity: a parity loop that checked nothing would pass silently, which is the failure this file
+# exists to prevent. Assert it actually compared a meaningful number of skills.
+chk "skill-parity loop is NON-VACUOUS (compared >= 5 skills, not an empty glob)" \
+  "[ '$_parity_n' -ge 5 ]"
+chk "mc-report description triggers on the semantic-report moment (decision · milestone · completion/artifact)" \
+  "python3 -c \"t=open('$PLUGIN/skills/mc-report/SKILL.md').read();fm=t.split('---')[1].lower();assert 'decision' in fm and 'milestone' in fm and ('artifact' in fm or 'completion' in fm)\""
+
+# ── (c) THE HOOK LANE — feed REAL SubagentStart/Stop JSON to a FIXTURE adopter board ──
+# Board-targeting defect canary: snapshot the LIVE core board bytes; a wrong-board write is the real
+# bug this hook must never make, so assert the core board is byte-UNCHANGED after every fixture write.
+S4CORE="$REPO/mission-control/mission-state.json"
+S4CORE_SNAP="$(mktemp)"; printf '%s\n' "$S4CORE_SNAP" >> "$CLEANUP_LIST"
+S4CORE_EXISTED=0; if [ -f "$S4CORE" ]; then cp "$S4CORE" "$S4CORE_SNAP"; S4CORE_EXISTED=1; fi
+
+S4="$(mk)"; mkdir -p "$S4/.kickoff/bin" "$S4/.kickoff/state/mission-control"
+# the REAL mc seam shim (gen-shim → byte-identical to what a real `kickoff adopt` writes)
+python3 "$AM" gen-shim --repo "$S4" --name mc --source core-vTEST >/dev/null
+S4BOARD="$S4/.kickoff/state/mission-control/mission-state.json"
+# instance.env points KICKOFF_CORE_DIR at the REAL core (so the shim finds mc-update.py) + MC_STATE_FILE
+# at the FIXTURE board (so mc-update writes THERE, never the core default).
+printf 'export KICKOFF_CORE_DIR=%q\nexport MC_STATE_FILE=%q\n' "$REPO" "$S4BOARD" > "$S4/.kickoff/instance.env"
+# a PRISTINE skeleton — never seeded from a live script (a live-seeded fixture rots on the dogfood board's next change)
+printf '{"project":"fixture","headline":"","human_plate":[],"in_progress":[],"functions":[],"blocked":[],"decided":[],"done":[],"activity":[]}\n' > "$S4BOARD"
+
+# SubagentStart (REAL key: agent_type) → function planner working
+S4_START_RC=0
+printf '{"hook_event_name":"SubagentStart","agent_type":"planner","session_id":"s","agent_id":"a","cwd":"%s"}' "$S4" \
+  | CLAUDE_PROJECT_DIR="$S4" bash "$PLUGIN/hooks/mc-hook.sh" || S4_START_RC=$?
+chk "hook SubagentStart: exit 0 (telemetry never blocks the subagent turn)" "[ $S4_START_RC -eq 0 ]"
+chk "hook SubagentStart: functions[planner].status==working landed in the FIXTURE board" \
+  "python3 -c \"import json;d=json.load(open('$S4BOARD'));assert any(x['name']=='planner' and x['status']=='working' for x in d['functions'])\""
+
+# SubagentStop with a HOSTILE message (untrusted last_assistant_message) → done + log, NO injection.
+# Build the payload in python (avoids bash quoting hell): the message carries $()/backtick/quote/; payloads.
+S4_STOP_RC=0
+python3 -c "import sys,json;fix=sys.argv[1];msg='pwn: \$(touch %s/INJECTED) \`touch %s/INJECTED2\` \"; echo MARKER_S4_PWNED'%(fix,fix);print(json.dumps({'hook_event_name':'SubagentStop','agent_type':'planner','last_assistant_message':msg}))" "$S4" \
+  | CLAUDE_PROJECT_DIR="$S4" bash "$PLUGIN/hooks/mc-hook.sh" || S4_STOP_RC=$?
+chk "hook SubagentStop: exit 0" "[ $S4_STOP_RC -eq 0 ]"
+chk "hook SubagentStop: functions[planner] flipped to status==done (upsert by name, not a 2nd row)" \
+  "python3 -c \"import json;d=json.load(open('$S4BOARD'));f=[x for x in d['functions'] if x['name']=='planner'];assert len(f)==1 and f[0]['status']=='done'\""
+chk "hook SubagentStop: the final message is on the 📡 feed sourced 'planner' (signal-only)" \
+  "python3 -c \"import json;d=json.load(open('$S4BOARD'));a=d['activity'];assert a[-1]['source']=='planner' and 'MARKER_S4_PWNED' in a[-1]['text']\""
+chk "hook INJECTION-SAFE: the \$()/backtick payload was stored as LITERAL text, NEVER executed" \
+  "[ ! -e '$S4/INJECTED' ] && [ ! -e '$S4/INJECTED2' ]"
+if [ "$S4CORE_EXISTED" = 1 ]; then
+  chk "hook BOARD-TARGET: live core mission-state.json byte-UNCHANGED (wrote the ADOPTER board only)" \
+    "cmp -s \"$S4CORE_SNAP\" \"$S4CORE\""
+fi
+
+# ── (d) NON-FATALITY lanes — garbage / missing shim / no project dir → exit 0, no corruption ──
+S4SNAP="$(mktemp)"; printf '%s\n' "$S4SNAP" >> "$CLEANUP_LIST"; cp "$S4BOARD" "$S4SNAP"
+S4_GARBAGE_RC=0
+printf 'this is not json at all }{' | CLAUDE_PROJECT_DIR="$S4" bash "$PLUGIN/hooks/mc-hook.sh" || S4_GARBAGE_RC=$?
+chk "hook NON-FATAL: garbage stdin → exit 0 AND the board is byte-unchanged (no corruption)" \
+  "[ $S4_GARBAGE_RC -eq 0 ] && cmp -s \"$S4SNAP\" \"$S4BOARD\""
+
+S4NOADOPT="$(mk)"   # a dir with NO .kickoff/bin/mc — repo not adopted / mid-pull
+S4_NOSHIM_RC=0
+printf '{"hook_event_name":"SubagentStart","agent_type":"planner"}' \
+  | CLAUDE_PROJECT_DIR="$S4NOADOPT" bash "$PLUGIN/hooks/mc-hook.sh" || S4_NOSHIM_RC=$?
+chk "hook NON-FATAL: no .kickoff/bin/mc shim (unadopted repo / mid-pull) → fail-open exit 0" "[ $S4_NOSHIM_RC -eq 0 ]"
+
+S4_NOPROJ_RC=0
+printf '{"agent_type":"planner"}' | env -u CLAUDE_PROJECT_DIR bash "$PLUGIN/hooks/mc-hook.sh" || S4_NOPROJ_RC=$?
+chk "hook NON-FATAL: no CLAUDE_PROJECT_DIR → exit 0 (nothing to anchor)" "[ $S4_NOPROJ_RC -eq 0 ]"
+
+# ── (e) RED-FIRST proof (non-vacuity) — a MIS-MAPPED payload field makes the lane RED ──
+# Break the hook's field extraction (agent_type → agent, a key the REAL payload never carries), fire
+# the SAME Start payload at a FRESH fixture board, and assert NO row lands: the (c) assertion above
+# would go RED on this broken hook — proving the lane isn't vacuous (a fixture that can't fail is no test).
+S4MUT="$(mk)"; mkdir -p "$S4MUT/.kickoff/bin" "$S4MUT/.kickoff/state/mission-control"
+python3 "$AM" gen-shim --repo "$S4MUT" --name mc --source core-vTEST >/dev/null
+S4MBOARD="$S4MUT/.kickoff/state/mission-control/mission-state.json"
+printf 'export KICKOFF_CORE_DIR=%q\nexport MC_STATE_FILE=%q\n' "$REPO" "$S4MBOARD" > "$S4MUT/.kickoff/instance.env"
+printf '{"project":"fixture","headline":"","human_plate":[],"in_progress":[],"functions":[],"blocked":[],"decided":[],"done":[],"activity":[]}\n' > "$S4MBOARD"
+sed 's/d.get("agent_type")/d.get("agent")/' "$PLUGIN/hooks/mc-hook.sh" > "$S4MUT/broken-hook.sh"
+S4_MUT_RC=0
+printf '{"hook_event_name":"SubagentStart","agent_type":"planner"}' \
+  | CLAUDE_PROJECT_DIR="$S4MUT" bash "$S4MUT/broken-hook.sh" >/dev/null 2>&1 || S4_MUT_RC=$?
+chk "RED-FIRST: a hook that mis-maps agent_type lands NO row (the lane FAILS on broken code — non-vacuous)" \
+  "! python3 -c \"import json;d=json.load(open('$S4MBOARD'));assert any(x.get('name')=='planner' for x in d['functions'])\""
+chk "RED-FIRST: even the BROKEN hook exits 0 (a broken telemetry hook must never block the turn)" "[ $S4_MUT_RC -eq 0 ]"
+echo
+
+# ══════════════════════════════════════════════════════════════════════════════════════
+echo "9. #8 — the CLI's own bookkeeping is not adopter drift (2026-08-12, the whole fleet)"
+# ══════════════════════════════════════════════════════════════════════════════════════
+# WHAT HAPPENED. The vendor CLI stamps `.orphaned_at` (a millisecond epoch) into a cached plugin
+# version dir once no USER-scope marketplace references it. kickoff's marketplace is registered
+# PER-ADOPTER at project scope, so on any box where that is the only registration the CLI orphans
+# every cached kickoff version as a matter of course. The cache-vs-core file-set compare then saw
+# one extra file and reported DRIFT — and #8 is fail-closed, on supervisor start AND on every engine
+# hop. Measured on this machine: SIX orgs in a hard preflight failure simultaneously, each one
+# restart away from not booting a session, while the org that found it (no interactive plugin entry,
+# so it skips #8 entirely) looked perfectly healthy.
+#
+# WHY A LANE AND NOT JUST A FIX. Nothing detected this. It surfaced because an unrelated suite went
+# red and the first assumption — "my change broke it" — happened to be wrong. A drift check that
+# cries tampering at the vendor's housekeeping erodes exactly the trust it exists to build.
+#
+# The lanes are the whole contract: ignore the marker, still catch real drift, and refuse to let the
+# exemption travel to the core side or one directory down, where a payload could hide behind the
+# same name.
+VB_CORE="$(mk)"; VB_CFG="$(mk)"; VB_REPO="$(mk)"
+mkdir -p "$VB_CORE/plugin/.claude-plugin" "$VB_CORE/plugin/hooks" "$VB_REPO/.kickoff"
+printf '{"name":"vbp","version":"9.9.9"}\n' > "$VB_CORE/plugin/.claude-plugin/plugin.json"
+printf 'payload\n'                          > "$VB_CORE/plugin/hooks/h.py"
+# `entries` is REQUIRED — the loader calls a manifest without it malformed and exits FATAL. A first
+# draft of this fixture omitted it, and every lane went red for a reason that had nothing to do with
+# the check: the world could not be built, so the assertions were reporting on nothing. That is why
+# the CONTROL lane below runs first and asserts the clean tree VERIFIES rather than assuming it.
+printf '{"entries":[],"machine_entries":[{"kind":"plugin","marketplace":"vbm","plugin":"vbp"}]}\n' \
+  > "$VB_REPO/.kickoff/adopt-manifest.json"
+VB_CACHE="$VB_CFG/plugins/cache/vbm/vbp/9.9.9"
+mkdir -p "$(dirname "$VB_CACHE")"
+cp -a "$VB_CORE/plugin" "$VB_CACHE"
+vb_verify() { python3 "$AM" plugin-cache-verify --repo "$VB_REPO" --core-dir "$VB_CORE" --config-dir "$VB_CFG" >/dev/null 2>&1; }
+
+chk "(9) CONTROL: a byte-identical cache verifies (else every lane below is vacuous)" "vb_verify"
+printf '1786521416169\n' > "$VB_CACHE/.orphaned_at"
+chk "(9) the CLI's top-level .orphaned_at is NOT drift — the fleet-killer case" "vb_verify"
+rm -f "$VB_CACHE/.orphaned_at"
+printf 'x\n' > "$VB_CACHE/EXTRA.md"
+chk "(9) NEGATIVE CONTROL: a real extra file STILL fails (the check was not disabled)" "! vb_verify"
+rm -f "$VB_CACHE/EXTRA.md"
+printf '1\n' > "$VB_CORE/plugin/.orphaned_at"
+chk "(9) the exemption is CACHE-SIDE only: the same name in the pinned CORE is still seen" "! vb_verify"
+rm -f "$VB_CORE/plugin/.orphaned_at"
+mkdir -p "$VB_CACHE/hooks"; printf '1\n' > "$VB_CACHE/hooks/.orphaned_at"
+chk "(9) the exemption is TOP-LEVEL only: the same name one dir down is not a hiding place" "! vb_verify"
+rm -f "$VB_CACHE/hooks/.orphaned_at"
+chk "(9) …and removing it returns the tree to verified (the lane cleaned up after itself)" "vb_verify"
 echo
 
 # ── belt-and-braces: the LIVE ~/.claude/plugins was NEVER touched by this whole run ──

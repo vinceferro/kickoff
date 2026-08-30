@@ -692,22 +692,39 @@ bash -n "$IF/scripts/supervisor.sh" && bash -n "$IF/scripts/session-run.sh" && o
 # family it retrofits. Extract each block and compare (patched fixture vs live).
 #
 # SCOPE FILTER (strip_bridge): the installer deliberately does NOT retrofit BRIDGE-LIVENESS
-# (finding #3) or the v0.6 fail-loud boot-grace belt — the BRIDGE_* / BRIDGE_BOOT_* globals + the
-# bridge-* refresh reset ship ONLY in the baked core (adopters get them via `kickoff pull`). So
-# the LIVE globals + refresh() carry bridge lines the installer never injects. strip_bridge drops EXACTLY those lines from BOTH sides before the
+# (finding #3), the v0.6 fail-loud boot-grace belt, the v0.7 G1 slice-5 ENGINE HOP, or the v0.8
+# MODEL-QUOTA FALLBACK belt — the BRIDGE_* / BRIDGE_BOOT_* / MODEL_FALLBACK_* globals, the
+# bridge-* refresh reset, and the engine_hop_boundary
+# session-boundary hooks ship ONLY in the baked core (adopters get them via `kickoff pull`;
+# retrofitting the hop CALL without the hop UNIT would spray command-not-found at every
+# boundary). So the LIVE globals + refresh() + trigger-3 carry lines the installer never
+# injects. strip_bridge drops EXACTLY those lines from BOTH sides before the
 # byte-compare, so each twin asserts "the installer reproduces the core's circuit-breaker+re-alarm
-# byte-for-byte, IGNORING the separately-shipped bridge-liveness feature." It is a PRECISE filter
-# (specific comment-block heads + the BRIDGE_ token + the bridge-* reset line), NOT a blunt "drop
-# anything mentioning bridge": a mutation to any circuit-breaker/re-alarm line survives it and still
+# byte-for-byte, IGNORING the separately-shipped bridge-liveness + engine-hop + model-fallback
+# features." It is a
+# PRECISE filter (specific comment-block heads + the BRIDGE_ token + the bridge-* reset line +
+# the two hop comment-blocks/calls + the one model-fallback globals block), NOT a blunt "drop
+# anything mentioning bridge/hop/model": a
+# mutation to any circuit-breaker/re-alarm line survives it and still
 # trips the twin (proven by the mutation test below), so the filter never guts drift-catching.
-# trigger-3 has NO bridge lines, so t3_of stays a DIRECT byte-compare (no filter) — the strongest
-# assertion, which also proves no bridge line ever leaked into the retrofitted trigger-3.
+# trigger-3 gained the slice-5 hop hook, so t3_of is now compared THROUGH the same filter
+# (pre-slice-5 it was a direct byte-compare; the filter drops only the hop lines there).
+#
+# v0.8 model-fallback is the SAME CATEGORY as bridge-liveness, and the check is that it is
+# core-only END-TO-END: install-auth-heal.sh injects NO model_fallback_step UNIT, NO call site,
+# and therefore must inject NO MODEL_FALLBACK_* globals either — retrofitting inert config for a
+# belt the retrofit never installs would be dead weight that re-drifts on the next belt edit.
+# (Asserted below: the installer mentions MODEL_FALLBACK nowhere. If that EVER changes, this
+# filter clause is what must be revisited — the twin is only allowed to ignore what the installer
+# genuinely does not ship.)
 strip_bridge() {
   awk '
     /^# bridge-liveness \(finding #3\):/ { b=1 }                  # globals: bridge comment head ...
     b { if (/^BRIDGE_RESPAWN_GIVEUP=/) b=0; next }                #   ... through the last BRIDGE_ global (one block)
     /^# v0\.6 fail-loud \(the never-came-up gap\):/ { d=1 }       # globals: v0.6 boot-grace comment head ...
-    d { if (/^BRIDGE_BOOT_GIVEUP=/) d=0; next }                   #   ... through the last BRIDGE_BOOT_ global (one block)
+    d { if (/^BRIDGE_BOOT_DEAF_SINCE=/) d=0; next }               #   ... through the last BRIDGE_BOOT_ global (one block; v0.9 moved the terminator off the deleted BRIDGE_BOOT_GIVEUP)
+    /^# v0\.8 model-quota fallback \(the "alive but cannot think" gap\):/ { m=1 }  # globals: v0.8 model-fallback head ...
+    m { if (/^case "\$MODEL_FALLBACK_WINDOW_SECONDS"/) m=0; next }                 #   ... through the last MODEL_FALLBACK_ global (one block)
     /^  # bridge-liveness \+ re-alarm bookkeeping/ { c=1; next }  # refresh(): bridge+re-alarm comment head ...
     c && /^  #/ { next }                                          #   ... its contiguous comment body
     c { c=0 }                                                     #   ... first non-comment line ends it (and prints)
@@ -715,14 +732,29 @@ strip_bridge() {
     e && /^  #/ { next }                                          #   ... its contiguous comment body
     e { e=0 }                                                     #   ... first non-comment line ends it (and prints)
     /^  case "\$why" in bridge-/ { next }                         # refresh(): the bridge-only streak-reset line (v0.5+v0.6)
+    /^  # v0\.7 G1 slice 5: the session boundary IS the hop point/ { g=1; next }   # refresh(): hop comment head ...
+    g && /^  #/ { next }                                          #   ... its contiguous comment body
+    g { g=0 }                                                     #   ... first non-comment line ends it (and prints)
+    /^    # v0\.7 G1 slice 5: a natural session death is ALSO a session boundary/ { h=1; next }  # trigger-3: hop comment head ...
+    h && /^    #/ { next }                                        #   ... its contiguous comment body
+    h { h=0 }                                                     #   ... first non-comment line ends it (and prints)
+    /^ *engine_hop_boundary \|\| true$/ { next }                  # the hop call itself (both boundary sites)
     { print }
   '
 }
 t3_of() { awk '/^  if ! session_alive && \[ ! -f "\$KICKOFF_DIR\/auth-escalated" \]; then$/{f=1} f{print} f&&/^  fi$/{exit}' "$1"; }
 gl_of() { awk '/^RESTART_BACKOFF_SECONDS="\$\{RESTART_BACKOFF_SECONDS:-5\}"/{f=1} f{print} /^DRY_RUN=/{if(f)exit}' "$1"; }
 [ "$(gl_of "$IF/scripts/supervisor.sh" | strip_bridge)" = "$(gl_of "$SCRIPTS/supervisor.sh" | strip_bridge)" ] && ok "S0 twin: patched globals == live circuit-breaker+re-alarm (bridge-liveness filtered)" || bad "S0 twin DRIFT: installer globals != live supervisor.sh (circuit-breaker+re-alarm)"
-[ "$(t3_of "$IF/scripts/supervisor.sh")" = "$(t3_of "$SCRIPTS/supervisor.sh")" ] && ok "S3 twin: patched trigger-3 block byte-identical to live supervisor.sh (no bridge lines)" || bad "S3 twin DRIFT: installer trigger-3 != live supervisor.sh"
-[ "$(rf_of "$IF/scripts/supervisor.sh" | strip_bridge)" = "$(rf_of "$SCRIPTS/supervisor.sh" | strip_bridge)" ] && ok "S4 twin: retrofitted refresh() == live reset (bridge-liveness filtered)" || bad "S4 twin DRIFT: installer refresh() != live supervisor.sh"
+# FILTER HONESTY GUARD: strip_bridge is only ENTITLED to ignore the model-fallback globals for as
+# long as the installer ships NO part of that belt. The moment install-auth-heal.sh learns to
+# retrofit model-fallback, ignoring its globals would hide a REAL twin gap (globals retrofitted
+# without the unit, or the unit without its globals) — so fail loudly here and force the filter
+# clause to be revisited, rather than letting the scope filter quietly rot into a blind spot.
+# `[ -r … ]` FIRST: `grep -q PAT /nonexistent` exits 2, and `!` inverts that to TRUE — so without the
+# readability test this guard would print a happy ✓ about a file it never opened (a vacuous pass).
+[ -r "$SCRIPTS/install-auth-heal.sh" ] && ! grep -q 'MODEL_FALLBACK\|model_fallback' "$SCRIPTS/install-auth-heal.sh" && ok "filter honesty: installer ships NO model-fallback (so S0 may ignore its core-only globals)" || bad "filter honesty BROKEN (or install-auth-heal.sh is unreadable): strip_bridge must stop ignoring MODEL_FALLBACK_* globals"
+[ "$(t3_of "$IF/scripts/supervisor.sh" | strip_bridge)" = "$(t3_of "$SCRIPTS/supervisor.sh" | strip_bridge)" ] && ok "S3 twin: patched trigger-3 block == live supervisor.sh (core-only hop lines filtered)" || bad "S3 twin DRIFT: installer trigger-3 != live supervisor.sh"
+[ "$(rf_of "$IF/scripts/supervisor.sh" | strip_bridge)" = "$(rf_of "$SCRIPTS/supervisor.sh" | strip_bridge)" ] && ok "S4 twin: retrofitted refresh() == live reset (bridge-liveness + hop filtered)" || bad "S4 twin DRIFT: installer refresh() != live supervisor.sh"
 bdir="$(ls -1d "$IF/.kickoff/backups"/auth-heal-* 2>/dev/null | tail -1)"
 [ -n "$bdir" ] && [ "$(sha256sum "$bdir/supervisor.sh" | cut -d' ' -f1)" = "$sup0" ] && ok "backup byte-matches the pre-apply original" || bad "backup wrong/missing"
 
@@ -861,13 +893,22 @@ echo 9 > "$Rr/.kickoff/announce.count"
   set -euo pipefail
   FASTDEATH_STREAK=5
   log() { :; }; stop_session() { :; }; start_session() { :; }
+  # v0.9: refresh()'s non-bridge arm now calls bridge_boot_reset (the helper lives in the
+  # bridge unit, which this fixture deliberately does NOT extract). Stub it OBSERVABLY rather
+  # than as a no-op: the supervisor-liveness suite proves what bridge_boot_reset DOES, but it
+  # stubs refresh() and so cannot prove refresh() CALLS it. This is the only harness that drives
+  # the real refresh(), so recording the call is what closes that wiring gap with an assertion
+  # instead of leaving it "proven by reading the diff".
+  bridge_boot_reset() { printf 'called\n' >> "$KICKOFF_DIR/boot_reset_calls"; }
   : > "$REFRESH_FLAG"
   eval "$(cat "$Rr/refresh.sh")"
   refresh "test"
   printf '%s\n' "$FASTDEATH_STREAK" > "$KICKOFF_DIR/ref_streak"
+  refresh "bridge-neverup-backoff"      # a bridge-* reason must PRESERVE the ladder (no reset call)
 ) > "$SCRATCH/t25ref.log" 2>&1
 [ "$(cat "$Rr/.kickoff/ref_streak" 2>/dev/null)" = "0" ] && ok "refresh() resets FASTDEATH_STREAK (healthy restart, not a crash)" || bad "refresh() did not reset the streak"
 [ "$(cat "$Rr/.kickoff/announce.count" 2>/dev/null)" = "0" ] && ok "refresh() zeroes announce.count (next restart announces #1)" || bad "refresh() did not reset announce.count"
+[ "$(grep -c . "$Rr/.kickoff/boot_reset_calls" 2>/dev/null || echo 0)" = "1" ] && ok "refresh(): a NON-bridge reason calls bridge_boot_reset ONCE; a bridge-* reason preserves the backoff ladder" || bad "refresh() bridge_boot_reset wiring wrong (want exactly 1 call from the non-bridge refresh, got $(grep -c . "$Rr/.kickoff/boot_reset_calls" 2>/dev/null || echo 0))"
 
 # ══════════════════════════════════════════════════════════════════════════════
 section "T26 zero-trace: the LIVE lifecycle files + .kickoff are untouched"

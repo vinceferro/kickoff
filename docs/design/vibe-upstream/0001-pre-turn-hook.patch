@@ -1,0 +1,130 @@
+diff --git a/vibe/core/agent_loop/_loop.py b/vibe/core/agent_loop/_loop.py
+index 2da3119..0f7c13e 100644
+--- a/vibe/core/agent_loop/_loop.py
++++ b/vibe/core/agent_loop/_loop.py
+@@ -1631,6 +1631,13 @@ class AgentLoop(AgentLoopHooksMixin):  # noqa: PLR0904
+             should_break_loop = False
+             first_llm_turn = True
+             self._reactive_recovery_used = False
++            # pre_turn hooks: supply context BEFORE the model thinks. Fired once here,
++            # OUTSIDE the loop, because the loop also re-runs for tool round-trips and a
++            # per-iteration firing would re-inject the same memory on every tool call.
++            pre_turn_messages, pre_turn_events = await self._dispatch_pre_turn_hooks()
++            for hook_event in pre_turn_events:
++                yield hook_event
++            self.messages.extend(pre_turn_messages)
+             while not should_break_loop:
+                 self._is_user_prompt_call = False
+                 result = await self.middleware_pipeline.run_before_turn(
+diff --git a/vibe/core/agent_loop_hooks.py b/vibe/core/agent_loop_hooks.py
+index c2c1f36..65d5172 100644
+--- a/vibe/core/agent_loop_hooks.py
++++ b/vibe/core/agent_loop_hooks.py
+@@ -38,6 +38,7 @@ from vibe.core.hooks.models import (
+     HookToolInputRewrite,
+     HookUserMessage,
+     PostAgentInvocation,
++    PreTurnInvocation,
+     PostToolInvocation,
+     PreToolInvocation,
+     ToolStatus,
+@@ -144,6 +145,39 @@ class AgentLoopHooksMixin:
+             if isinstance(ev, (HookEvent, HookUserMessage)):
+                 yield ev
+ 
++    async def _run_pre_turn_hooks(
++        self,
++    ) -> AsyncGenerator[HookEvent | HookUserMessage]:
++        if not self._hooks_manager:
++            return
++        invocation = PreTurnInvocation(**self._hook_session_context().model_dump())
++        async for ev in self._hooks_manager.run(invocation):
++            if isinstance(ev, (HookEvent, HookUserMessage)):
++                yield ev
++
++    async def _dispatch_pre_turn_hooks(
++        self,
++    ) -> tuple[list[LLMMessage], list[HookEvent]]:
++        """Run pre-turn hooks; return (context messages, events).
++
++        The mirror of :meth:`_dispatch_post_turn_hooks`. Each ``HookUserMessage``
++        becomes an ``injected`` user message placed BEFORE the model thinks, which
++        is what makes per-turn recalled memory possible without the user restating
++        it every turn.
++        """
++        from vibe.core.types import LLMMessage, Role
++
++        events: list[HookEvent] = []
++        messages: list[LLMMessage] = []
++        async for hook_event in self._run_pre_turn_hooks():
++            if isinstance(hook_event, HookUserMessage):
++                messages.append(
++                    LLMMessage(role=Role.user, content=hook_event.content, injected=True)
++                )
++            else:
++                events.append(hook_event)
++        return messages, events
++
+     async def _run_pre_tool_hooks(
+         self, tool_call: ResolvedToolCall, tool_input: dict[str, Any]
+     ) -> AsyncGenerator[HookEvent | HookToolDenial | HookToolInputRewrite]:
+diff --git a/vibe/core/hooks/manager.py b/vibe/core/hooks/manager.py
+index a574b06..96de9a8 100644
+--- a/vibe/core/hooks/manager.py
++++ b/vibe/core/hooks/manager.py
+@@ -15,6 +15,7 @@ from vibe.core.hooks._handler import (
+     _parse_structured_response,
+ )
+ from vibe.core.hooks._post_agent import PostAgentHandler
++from vibe.core.hooks._pre_turn import PreTurnHandler
+ from vibe.core.hooks._post_tool import PostToolHandler
+ from vibe.core.hooks._pre_tool import PreToolHandler
+ from vibe.core.hooks.config import HookConfig
+@@ -38,6 +39,7 @@ _HANDLERS: dict[HookType, HookHandler] = {
+     HookType.POST_AGENT: PostAgentHandler(),
+     HookType.PRE_TOOL: PreToolHandler(),
+     HookType.POST_TOOL: PostToolHandler(),
++    HookType.PRE_TURN: PreTurnHandler(),
+ }
+ 
+ 
+diff --git a/vibe/core/hooks/models.py b/vibe/core/hooks/models.py
+index 76b7141..f602c4c 100644
+--- a/vibe/core/hooks/models.py
++++ b/vibe/core/hooks/models.py
+@@ -21,6 +21,7 @@ class HookType(StrEnum):
+     POST_AGENT = auto()
+     PRE_TOOL = auto()
+     POST_TOOL = auto()
++    PRE_TURN = auto()
+ 
+ 
+ ToolStatus = Literal["success", "failure", "cancelled"]
+@@ -96,6 +97,18 @@ class PostAgentInvocation(HookSessionContext):
+     hook_event_name: Literal[HookType.POST_AGENT] = HookType.POST_AGENT
+ 
+ 
++class PreTurnInvocation(HookSessionContext):
++    """Fires once before each user turn reaches the model.
++
++    The counterpart of ``post_agent``: where that one can inject a retry AFTER
++    the model has spoken, this injects context BEFORE it thinks -- the natural
++    place for recalled memory, project state, or anything the agent should know
++    without the user restating it every turn.
++    """
++
++    hook_event_name: Literal[HookType.PRE_TURN] = HookType.PRE_TURN
++
++
+ class PreToolInvocation(HookSessionContext):
+     hook_event_name: Literal[HookType.PRE_TOOL] = HookType.PRE_TOOL
+     tool_name: str
+@@ -184,7 +197,7 @@ class HookSpecificOutput(BaseModel):
+ 
+     # pre_tool only.
+     tool_input: dict[str, Any] | None = None
+-    # post_tool only.
++    # post_tool and pre_turn.
+     additional_context: str | None = None
+ 
+ 

@@ -40,6 +40,44 @@ human briefs  →  you dispatch  →  specialists produce  →  you relay  →  
 - **Persistent memory.** Write what's durable and non-obvious so the next session inherits it.
 - **Quality is structural.** Nothing is "done" until it is built · tested · reviewed · scanned ·
   local gates green — and for any UI, rendered and looked at.
+- **Sessions degrade — measure it, then cycle yourself.** A long session goes stale: assumptions
+  rot, threads drop, you start looping. Do not rely on noticing — **measure**:
+
+      python3 "$KICKOFF_CORE_DIR/scripts/context-headroom.py"
+
+  Check it at natural boundaries in a long session (not at boot — a fresh session is always empty,
+  so a boot check would measure nothing). Past **~80% it is time to hand off**; past 90% you are in
+  the zone where you start re-deriving things you already knew.
+
+  The loop is **measure → hand off → cycle**, in that order, and the handoff is what makes it free:
+
+  1. **Hand off**: memory written (durable, non-obvious facts only), tracker current, work committed.
+     A restart is lossless *because* of this step — skip it and cycling really does lose something.
+  2. **Cycle**: `touch .kickoff/refresh-requested`. The supervisor watches that file and starts a
+     fresh session that re-grounds from the files. You do not need the human to restart you.
+
+  **Delegation is the other half.** A subagent runs in its own window, so its reading does not land
+  in yours — that is how a session stays deep and small. If you are climbing, delegate more rather
+  than cycling more often. But **a low reading is not proof you delegated well**: autocompaction
+  resets the gauge too, and looks identical. Compaction summarises and thins the detail; a refresh
+  re-grounds from the files, which still hold what a summary drops. Prefer the deliberate cycle.
+
+  Noticing you need this is part of the job, not a failure.
+
+## Evolving the system (you own this, the human steers)
+
+The crew **grows itself** — orchestrator-authored, human-approved. Watch the work for the signal, then
+propose the move; the human says yes, you author it from the template and log it in the tracker:
+
+- a domain recurring with no owner → **propose a new agent** (from `.claude/agent-charter-template.md`).
+- a reusable procedure the crew keeps re-doing by hand → **distill a skill** (from
+  `.claude/skill-template.md`) — recall is then free (Claude Code lists any `SKILL.md` by its description).
+- a correction you keep re-making → **bake it into the agent's charter**.
+- a task too big for the current crew → **propose a split**.
+
+The `crew-review` skill fires on these signals and stages the gated edits as one-tap turnkeys. You never
+mutate the crew autonomously — a new agent, skill, or charter edit is a behaviour change the whole crew
+inherits, so every one is the human's approval.
 
 ## The engine seam (how you invoke the pulled core)
 

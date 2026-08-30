@@ -1,0 +1,12 @@
+{
+  "name": "kickoff-local",
+  "description": "Local-path marketplace for the kickoff engine plugin. `kickoff adopt` registers it per-adopter at project scope; its source path is THIS machine's pinned core clone (~/kickoff-core/plugin) — a machine-specific path (design reconciliation note: acceptable for the single-adopter reality; a multi-interactive-adopter-on-one-box collision is a revisit-when-it-exists item).",
+  "owner": { "name": "kickoff" },
+  "plugins": [
+    {
+      "name": "kickoff",
+      "source": "./",
+      "description": "The kickoff engine plugin: coordinator/specialist skills, the function-agent crew, the proactive memory hook (thin shell → the pinned core's memory-retrieval/hook.mjs), and the chrome-devtools MCP."
+    }
+  ]
+}

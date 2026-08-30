@@ -71,6 +71,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -131,6 +132,11 @@ _here="$(cd "$(dirname "$0")" && pwd)"
 # ${REPO_DIR:-$PWD}-anchored data-path defaults resolve into THIS repo — never an ambient
 # REPO_DIR=<other repo> or a foreign $PWD. Explicit per-var overrides in instance.env still win.
 export REPO_DIR="$(cd "$_here/../.." && pwd)"
+# …and scrub the ambient data-path vars too: instance.env sets these as ${VAR:-default}, so a
+# parent shell's exported value would WIN and silently route reads/writes into ANOTHER repo's
+# board/tracker (reproduced live: one adopter's `mc render-tracker` rewrote a different repo's
+# TRACKER.md). Explicit values written IN instance.env still win.
+unset MC_STATE_FILE MC_TRACKER_FILE MEMORY_DB MEMORY_HOOK_LOG MEMORY_INDEX GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 [ -f "$_here/../instance.env" ] && . "$_here/../instance.env"
 _engine="${KICKOFF_CORE_DIR:-}/mission-control/mc-update.py"
 if [ ! -f "$_engine" ]; then
@@ -150,12 +156,45 @@ _here="$(cd "$(dirname "$0")" && pwd)"
 # ${REPO_DIR:-$PWD}-anchored data-path defaults resolve into THIS repo — never an ambient
 # REPO_DIR=<other repo> or a foreign $PWD. Explicit per-var overrides in instance.env still win.
 export REPO_DIR="$(cd "$_here/../.." && pwd)"
+# …and scrub the ambient data-path vars too: instance.env sets these as ${VAR:-default}, so a
+# parent shell's exported value would WIN and silently route reads/writes into ANOTHER repo's
+# board/tracker (reproduced live: one adopter's `mc render-tracker` rewrote a different repo's
+# TRACKER.md). Explicit values written IN instance.env still win.
+unset MC_STATE_FILE MC_TRACKER_FILE MEMORY_DB MEMORY_HOOK_LOG MEMORY_INDEX GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 [ -f "$_here/../instance.env" ] && . "$_here/../instance.env"
 _engine="${KICKOFF_CORE_DIR:-}/scripts/scan-secrets.sh"
 if [ ! -f "$_engine" ]; then
   printf 'kickoff engine not present — run `kickoff pull` (see .kickoff/README)\\n' >&2
   exit 1
 fi
+# scan THIS repo, not the caller's cwd — the engine lists files via `git ls-files` from CWD,
+# so without the cd the shim scanned whatever directory it happened to be called from.
+#
+# WORKSPACE MEMBER: when kickoff is mounted on a workspace ROOT (N sibling checkouts adopted as one
+# org), a member's git hook calls this shim from inside that member. cd-ing to the root there fans
+# the scan across every sibling AND scores THIS member's commit on other repos' staged files — a
+# member could not commit because a neighbour had a secret staged. So in that topology only, scan
+# the CALLER's repo.
+# TWO SPELLINGS OF "THIS IS A WORKSPACE ROOT", because a root may now be a git repo AND a workspace:
+# the root is not itself a repo (the original shape), OR it carries the explicit `.kickoff/workspace`
+# marker. Without the marker a git root reads as single-repo, which is exactly what would send a
+# member's pre-commit to scan the ROOT's index instead of its own — a silent false green on every
+# member commit. A single-repo adopt CANNOT take this branch: its REPO_DIR is a git repo's root and
+# has no marker, so the guard below is false and the cd is byte-for-byte the old behaviour.
+_ws_target="$REPO_DIR"
+_root_top="$(git -C "$REPO_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$_root_top" ] && _root_top="$(cd "$_root_top" 2>/dev/null && pwd -P || printf '%s' "$_root_top")"
+_root_p="$(cd "$REPO_DIR" 2>/dev/null && pwd -P || printf '%s' "$REPO_DIR")"
+if [ "$_root_top" != "$_root_p" ] || [ -f "$_root_p/.kickoff/workspace" ]; then
+  # `pwd -P` on BOTH sides: --show-toplevel is physical while REPO_DIR is logical, and a symlinked
+  # workspace would otherwise miss the prefix and silently fall back to the root fan-out.
+  _caller_top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$_caller_top" ] && _caller_top="$(cd "$_caller_top" 2>/dev/null && pwd -P || printf '%s' "$_caller_top")"
+  case "$_caller_top" in
+    "$_root_p"/*) _ws_target="$_caller_top" ;;
+  esac
+fi
+cd "$_ws_target"
 exec "$_engine" "$@"
 '''
 
@@ -169,12 +208,42 @@ _here="$(cd "$(dirname "$0")" && pwd)"
 # ${REPO_DIR:-$PWD}-anchored data-path defaults resolve into THIS repo — never an ambient
 # REPO_DIR=<other repo> or a foreign $PWD. Explicit per-var overrides in instance.env still win.
 export REPO_DIR="$(cd "$_here/../.." && pwd)"
+# …and scrub the ambient data-path vars too: instance.env sets these as ${VAR:-default}, so a
+# parent shell's exported value would WIN and silently route reads/writes into ANOTHER repo's
+# board/tracker (reproduced live: one adopter's `mc render-tracker` rewrote a different repo's
+# TRACKER.md). Explicit values written IN instance.env still win.
+unset MC_STATE_FILE MC_TRACKER_FILE MEMORY_DB MEMORY_HOOK_LOG MEMORY_INDEX GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 [ -f "$_here/../instance.env" ] && . "$_here/../instance.env"
 _engine="${KICKOFF_CORE_DIR:-}/scripts/scan-structure.sh"
 if [ ! -f "$_engine" ]; then
   printf 'kickoff engine not present — run `kickoff pull` (see .kickoff/README)\\n' >&2
   exit 1
 fi
+# scan THIS repo, not the caller's cwd — the engine lists files via `git ls-files` from CWD,
+# so without the cd the shim scanned whatever directory it happened to be called from.
+#
+# WORKSPACE MEMBER: when kickoff is mounted on a workspace ROOT (N sibling checkouts adopted as one
+# org), a member's git hook calls this shim from inside that member. cd-ing to the root there fans
+# the scan across every sibling AND scores THIS member's push on other repos' files. So in that
+# topology only, scan the CALLER's repo.
+# TWO SPELLINGS OF "THIS IS A WORKSPACE ROOT", because a root may now be a git repo AND a workspace:
+# the root is not itself a repo (the original shape), OR it carries the explicit `.kickoff/workspace`
+# marker. A single-repo adopt CANNOT take this branch: its REPO_DIR is a git repo's root and has no
+# marker, so the guard below is false and the cd is byte-for-byte the old behaviour.
+_ws_target="$REPO_DIR"
+_root_top="$(git -C "$REPO_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+[ -n "$_root_top" ] && _root_top="$(cd "$_root_top" 2>/dev/null && pwd -P || printf '%s' "$_root_top")"
+_root_p="$(cd "$REPO_DIR" 2>/dev/null && pwd -P || printf '%s' "$REPO_DIR")"
+if [ "$_root_top" != "$_root_p" ] || [ -f "$_root_p/.kickoff/workspace" ]; then
+  # `pwd -P` on BOTH sides: --show-toplevel is physical while REPO_DIR is logical, and a symlinked
+  # workspace would otherwise miss the prefix and silently fall back to the root fan-out.
+  _caller_top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$_caller_top" ] && _caller_top="$(cd "$_caller_top" 2>/dev/null && pwd -P || printf '%s' "$_caller_top")"
+  case "$_caller_top" in
+    "$_root_p"/*) _ws_target="$_caller_top" ;;
+  esac
+fi
+cd "$_ws_target"
 exec "$_engine" "$@"
 '''
 
@@ -198,8 +267,95 @@ FILE_SEAM_TEMPLATES = {
     ".kickoff/KICKOFF.md": "KICKOFF.md",
     ".kickoff/.gitignore": "kickoff.gitignore",
     ".kickoff/README": "kickoff-README.md",
+    # the ADOPTER's opencode config — deliberately NOT the origin's own opencode.json, which pins
+    # a model + provider (a provider that silently wedges sessions on boxes without its
+    # credentials). The adopter template is pin-free: interactive sessions inherit the global
+    # config; headless workers get OPENCODE_MODEL_* from instance.env (README-opencode.md).
+    "opencode.json": "opencode.json",
 }
 _TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "templates")
+
+# The charter TEMPLATE gen-agent renders a gap-filler from — lives at the CORE repo root
+# (.claude/agent-charter-template.md), NOT under scripts/templates/. It is the SAME file the
+# coordinator authors a new specialist from by hand; gen-agent mechanizes that so a gap-filler is
+# correct-by-construction (least-privilege tools, a Report-to-MC section, the CANON block) every time.
+_CORE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_AGENT_CHARTER_TEMPLATE = os.path.join(_CORE_ROOT, ".claude", "agent-charter-template.md")
+
+# The MAIN-CONVERSATION reporting canon (an output style reaches ONLY the main conversation —
+# a subagent runs its own system prompt and never sees it; the subagent half of the same canon
+# travels instead via the CANON block in .claude/agent-charter-template.md above, rendered
+# verbatim into every gen-agent charter — see _render_agent_charter). Read directly from the
+# CORE repo root (same idiom as _AGENT_CHARTER_TEMPLATE, not scripts/templates/), so ONE file
+# is the source of truth for both the origin's own settings.json and every adopter's copy.
+_OUTPUT_STYLE_PATH = ".claude/output-styles/plain-report.md"
+_OUTPUT_STYLE_SRC = os.path.join(_CORE_ROOT, *_OUTPUT_STYLE_PATH.split("/"))
+
+# ── the OPENCODE ENGINE-PARITY seam set (2026-08-28) ─────────────────────────────────────
+# The origin runs BOTH engines (claude AND opencode — engine parity is a release gate), but
+# adopt/pull wired only the claude half: an adopter's .opencode/ was hand-placed folklore no
+# pull ever updated. These are the core-root sources (same `_read_core_root_file` idiom as the
+# output style — ONE source of truth, the origin's own files), delivered verbatim EXCEPT the
+# MODEL STANCE: a coordinator charter's `model:` pin wedges sessions SILENTLY on boxes without
+# that provider's credentials, so it is STRIPPED at delivery for ADOPTERS ONLY (the origin's own
+# files stay as-is). The regex mirrors the selftest fixture's own strip, byte-for-byte.
+_OPENCODE_AGENTS = ("builder", "coordinator", "deployer", "planner", "reviewer")
+_OPENCODE_PLUGINS = ("memory-search.js", "engine-credit.js")
+_OPENCODE_AGENT_DIR = os.path.join(_CORE_ROOT, ".opencode", "agent")
+_OPENCODE_PLUGIN_DIR = os.path.join(_CORE_ROOT, ".opencode", "plugins")
+_MODEL_PIN_LINE_RE = re.compile(r"(?m)^\s*model\s*:.*\n")
+
+# Every repo-relative path the set delivers — the manifest/reconcile/sync enumeration.
+_OPENCODE_SEAM_PATHS = tuple(
+    [".opencode/agent/%s.md" % n for n in sorted(_OPENCODE_AGENTS)]
+    + [".opencode/plugins/%s" % p for p in sorted(_OPENCODE_PLUGINS)]
+    + ["opencode.json"]
+)
+
+
+def opencode_set_present():
+    """Does THIS core carry the opencode engine-parity set? A core predating the set (or a
+    stripped fixture core) delivers nothing — callers SKIP the way the plugin arm skips an
+    absent plugin/, they never die on a world where the feature does not exist yet."""
+    return os.path.isfile(os.path.join(_OPENCODE_AGENT_DIR, "coordinator.md")) and all(
+        os.path.isfile(os.path.join(_OPENCODE_PLUGIN_DIR, p)) for p in _OPENCODE_PLUGINS)
+
+
+def _strip_model_pin(text):
+    """The adopter delivery stance: drop any YAML `model:` pin line. The origin keeps its own."""
+    return _MODEL_PIN_LINE_RE.sub("", text)
+
+
+def _opencode_agent_template(name):
+    """The canonical ADOPTER bytes for one crew charter: the core-root file, model-pin-stripped."""
+    if name not in _OPENCODE_AGENTS:
+        die("unknown opencode agent '%s' — known: %s" % (name, ", ".join(sorted(_OPENCODE_AGENTS))))
+    return _strip_model_pin(_read_core_root_file(os.path.join(_OPENCODE_AGENT_DIR, name + ".md")))
+
+# A gap-filler name is BOTH a Mission-Control lane key AND a path component (.claude/agents/<name>.md):
+# validate it hard (kebab-case, no metachars) so it can never traverse out of .claude/agents/.
+_AGENT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+
+# --description / --domain are FREE TEXT, but they land in the YAML frontmatter of the emitted charter
+# (verbatim, as `description: <val>` — and --domain feeds the default description). A NEWLINE or other
+# control char in either would let an injected line (`\ntools: *\n---`) close the frontmatter EARLY and
+# smuggle in a wildcard `tools:` BEFORE the template's least-privilege placeholder — defeating the exact
+# correct-by-construction non-wildcard guarantee this generator exists to deliver. --name is hard-validated
+# (:_AGENT_NAME_RE) for the same reason (it lands in structured output); these must be too. REJECT, never
+# sanitize: a single-line value can't break out of its frontmatter line, so we forbid any control char
+# (newline/CR/tab/etc). A colon or `---` WITHIN one line stays a scalar value and is fine.
+_FRONTMATTER_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _reject_frontmatter_ctrl(value, flag):
+    """Die if a frontmatter-bound free-text value carries a control char (newline/CR/…) — the
+    frontmatter-injection guard for gen-agent's --description/--domain. See _FRONTMATTER_CTRL_RE."""
+    m = _FRONTMATTER_CTRL_RE.search(value)
+    if m:
+        die("%s must be a single line of text (no newlines/control chars) — it lands verbatim in the "
+            "charter's YAML frontmatter, and an injected line could smuggle a wildcard `tools:` past the "
+            "least-privilege guarantee. Got a control char (0x%02x) at offset %d."
+            % (flag, ord(m.group()), m.start()))
 
 # The KICKOFF.local.md stub gen-charter seeds ONCE (seeded-instance, adopter-owned). It is
 # intentionally an inline stub, NOT a pinned template: it is never regenerated on pull and is
@@ -252,7 +408,42 @@ def seam_template_for(path):
             return SHIM_TEMPLATES[name]
     if norm in FILE_SEAM_TEMPLATES:
         return _read_file_seam_template(FILE_SEAM_TEMPLATES[norm])
+    if norm == _OUTPUT_STYLE_PATH:
+        return _read_core_root_file(_OUTPUT_STYLE_SRC)
+    # the opencode engine-parity set (gen-opencode's sources, mirrored EXACTLY — reconcile's
+    # byte-match must compare against the bytes gen-opencode actually delivers): crew charters
+    # ship model-pin-stripped (the canonical ADOPTER bytes; the origin's own charters pin the
+    # model), plugins verbatim from the core root. Without these, reconcile's `known` loop
+    # hit the belt-and-braces `tmpl is None: continue` and silently recorded NOTHING for the
+    # set (adopt-selftest lane 12f, 2026-08-28).
+    if norm.startswith(".opencode/agent/") and norm.endswith(".md"):
+        name = norm[len(".opencode/agent/"):-len(".md")]
+        if name in _OPENCODE_AGENTS:
+            return _opencode_agent_template(name)
+    if norm.startswith(".opencode/plugins/"):
+        pname = norm[len(".opencode/plugins/"):]
+        if pname in _OPENCODE_PLUGINS:
+            return _read_core_root_file(os.path.join(_OPENCODE_PLUGIN_DIR, pname))
+    if norm.startswith(".opencode/agent/") and norm.endswith(".md"):
+        name = norm[len(".opencode/agent/"):-len(".md")]
+        if "/" not in name and name in _OPENCODE_AGENTS:
+            return _opencode_agent_template(name)
+    if norm.startswith(".opencode/plugins/") and norm.endswith(".js"):
+        name = norm[len(".opencode/plugins/"):-len(".js")]
+        if "/" not in name and name + ".js" in _OPENCODE_PLUGINS:
+            return _read_core_root_file(os.path.join(_OPENCODE_PLUGIN_DIR, name + ".js"))
     return None
+
+
+def _read_core_root_file(path):
+    """Read a whole-file seam template that lives directly under the CORE repo root (not
+    scripts/templates/) — the _AGENT_CHARTER_TEMPLATE / _OUTPUT_STYLE_SRC idiom. FATAL if
+    absent — a pinned tag missing its own template is a broken core, not a silent skip."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    except OSError as e:
+        die("FATAL — core-root seam template missing: %s (%s) — is this a complete core checkout?" % (path, e))
 
 
 def die(msg, code=2):
@@ -548,12 +739,30 @@ class _CacheHashError(Exception):
     """Raised on ANY symlink / out-of-tree entry while hashing a plugin tree — fail-closed."""
 
 
-def _fileset_manifest(base):
+# Vendor BOOKKEEPING the CLI writes INTO a cache version dir — not plugin content, and never present
+# in the pinned $core/plugin/ tree it is compared against. Excluded on the CACHE side only (see the
+# call site), because otherwise the drift check reports the vendor's own housekeeping as tampering.
+#
+# `.orphaned_at` (a millisecond epoch) is stamped when a cached version stops being referenced by a
+# user-scope marketplace. kickoff's marketplace is registered PER-ADOPTER at project scope, so the
+# box has no user-scope reference and the CLI orphans every cached kickoff version as a matter of
+# course. Measured 2026-08-12: this single extra file put ALL SIX other orgs on this machine into a
+# hard preflight failure at once — and preflight is fail-closed on supervisor start AND on every
+# engine hop, so the next restart or the next `kickoff pull` would have taken each of them dark.
+# Excluding it costs nothing a drift check was ever buying: it is CLI-authored, its content is a
+# timestamp, and no plugin payload can hide in a name the core tree can never contain.
+_CACHE_VENDOR_BOOKKEEPING = frozenset({".orphaned_at"})
+
+
+def _fileset_manifest(base, ignore_top=frozenset()):
     """Sorted [(relpath, sha256hex), …] for every REGULAR file under `base` (a directory). Raises
     _CacheHashError on ANY symlink or out-of-tree resolution: a plugin cache/source tree is a
     byte-copy with no symlinks, so a symlink is anomalous AND a potential out-of-bounds read (a
     planted `cache/…/x → /etc/shadow` would otherwise be hashed) — refuse it. `base` is realpath'd so
-    the _real_within containment compares like-for-like."""
+    the _real_within containment compares like-for-like.
+
+    `ignore_top` skips exact TOP-LEVEL names (never a glob, never nested): the exclusion is for known
+    vendor bookkeeping and must not become a hiding place one directory down."""
     base_real = os.path.realpath(base)
     out = []
 
@@ -565,6 +774,8 @@ def _fileset_manifest(base):
             raise _CacheHashError("cannot read '%s' (%s)" % (rel or ".", e))
         for e in entries:
             r = (rel + "/" + e.name) if rel else e.name
+            if rel == "" and e.name in ignore_top and e.is_file(follow_symlinks=False):
+                continue
             if e.is_symlink():
                 raise _CacheHashError("symlink entry refused (not a regular file — possible out-of-tree read): %s" % r)
             if e.is_dir(follow_symlinks=False):
@@ -692,7 +903,10 @@ def cmd_plugin_cache_verify(args):
             failed += 1
             continue
         try:
-            cache_manifest = _fileset_manifest(cache_dir)
+            # CACHE side only. The core tree above is hashed with NO exclusions — so a file the CLI
+            # writes into its cache can be ignored, while the same name appearing in the pinned core
+            # would still be seen and would still count as drift.
+            cache_manifest = _fileset_manifest(cache_dir, ignore_top=_CACHE_VENDOR_BOOKKEEPING)
         except _CacheHashError as ce:
             print("  [ FAIL ] %-24s cache tree anomalous: %s — refusing" % (label, ce))
             failed += 1
@@ -931,9 +1145,1094 @@ def cmd_gen_readme(args):
     return 0
 
 
+def cmd_gen_output_style(args):
+    """Generate .claude/output-styles/plain-report.md into the adopter repo + record it
+    created/seam. Copies the CORE's OWN reporting-canon output style verbatim (byte-identical —
+    ONE source of truth, see _OUTPUT_STYLE_SRC), so `sync-seams` regenerates it on pull and
+    preflight #8 whole-file-hashes it exactly like any other FILE seam. Mirrors
+    cmd_gen_gitignore/cmd_gen_readme: symlink-safe write, upsert the receipt (idempotent — a
+    re-run rewrites the seam + row rather than duplicating). 0644 (non-bin seam).
+
+    An output style reaches the MAIN CONVERSATION ONLY (a subagent never sees it) — this call
+    is HALF the wiring. The other half is the `.claude/settings.json` `outputStyle` key merge
+    (see `_adopt_wire_output_style` in the `kickoff` CLI, which calls this generator then merges
+    the key) and the CANON block already baked into every gen-agent-rendered charter."""
+    repo = resolve_repo_dir(args)
+    if not args.source:
+        die("--source is required (e.g. core-v0.2) — it stamps the seam's provenance in the manifest")
+
+    rel = _OUTPUT_STYLE_PATH
+    abs_path = os.path.join(repo, *rel.split("/"))
+    tmpl = _read_core_root_file(_OUTPUT_STYLE_SRC)
+
+    mpath = manifest_path(repo)
+    manifest = load_manifest(mpath)
+
+    # ── NEVER clobber an adopter-owned file at this path ────────────────────────────────
+    # This is the FIRST file seam we place inside the adopter's own `.claude/` namespace;
+    # every earlier seam lived under `.kickoff/`, where pre-existence cannot happen, so no
+    # guard existed. An adversarial fixture caught the consequence: an adopter who had
+    # authored their own `plain-report.md` had it overwritten and recorded action=created,
+    # so `eject` DELETED their file and left their tree dirty — while the console reported
+    # a clean create. That is an undisclosed, irreversible write into a repo we do not own.
+    # sync-seams' receipt-based hand-edit refusal cannot cover this: at first adopt there is
+    # no receipt yet. Same shape as the KICKOFF.local.md no-clobber guard above.
+    if os.path.lexists(abs_path):
+        if not _real_within(repo, abs_path):
+            die("refusing to touch an output style that resolves OUTSIDE the repo (symlink escape): %s" % abs_path)
+        existing = None
+        try:
+            with open(abs_path, "rb") as f:
+                existing = f.read()
+        except OSError as exc:
+            die("cannot read the existing output style at %s: %s" % (rel, exc))
+        ours = tmpl.encode() if isinstance(tmpl, str) else tmpl
+        if existing != ours:
+            # Theirs, not ours (or ours, hand-edited). Leave it exactly as it is, record
+            # nothing to reverse, and SAY SO at the moment it happens — disclosure is the
+            # requirement, not a doc footnote.
+            print("gen-output-style: LEFT AS-IS — %s already exists and is not ours; "
+                  "your file is untouched and kickoff will not manage it. "
+                  "To adopt the core style, move your file aside and re-run." % rel)
+            # rc 3 = "left as-is, nothing written, nothing recorded". A DISTINCT code, not a
+            # string the caller greps: the caller must be able to disclose what actually
+            # happened even if this message is later reworded. rc 0 stays "wrote it",
+            # non-zero-non-3 stays "failed".
+            return 3
+        # Byte-identical to the template: our own prior write. Fall through and re-record
+        # (idempotent re-adopt), which is what the receipt upsert below is for.
+
+    _write_seam(repo, abs_path, tmpl, mode=0o644)
+    _upsert_entry(manifest, {"path": rel, "action": "created", "class": "seam",
+                             "source": args.source, "sha256_at_write": sha256_file(abs_path)})
+    save_manifest(mpath, manifest)
+    print("gen-output-style: wrote %s (0644) + recorded created/seam [%s]  → %s" % (rel, args.source, mpath))
+    return 0
+
+
+def cmd_gen_opencode(args):
+    """Generate the OPENCODE ENGINE-PARITY seam set into the adopter repo + record each file
+    created/seam (2026-08-28). Delivers, from THIS core (same source as every other seam):
+      • .opencode/agent/{builder,coordinator,deployer,planner,reviewer}.md — the crew charters,
+        VERBATIM except the MODEL STANCE: any `model:` pin line is STRIPPED at delivery (the
+        origin's own charters keep their pins; a pinned model silently wedges adopter sessions
+        on boxes without that provider's credentials);
+      • .opencode/plugins/{memory-search,engine-credit}.js — the two plugins, verbatim;
+      • opencode.json — the ADOPTER template (scripts/templates/opencode.json), pin-free by
+        design: the origin's own config pins a provider that wedges adopters; interactive
+        sessions inherit the global config, headless workers get instance.env OPENCODE_MODEL_*;
+      • AGENTS.md → CLAUDE.md — the pointer opencode.json's `instructions` reference (the
+        origin's own shape). Recorded as a created/seam row carrying `symlink_target` and NO
+        byte hash — a symlink's identity IS its target string — so verify + preflight #8 skip
+        it (they hash bytes, and hashing THROUGH the link would false-drift on every CLAUDE.md
+        edit) while eject reverses it by readlink-match.
+    Mirrors cmd_gen_output_style's NEVER-CLOBBER idiom per file: a pre-existing file whose bytes
+    differ is LEFT AS-IS, disclosed, and NOT recorded (an adopter's own .opencode/ is theirs —
+    the "boxe folklore" shape); byte-identical pre-existence falls through and re-records
+    (idempotent upsert, never duplicate rows). `kickoff adopt`/`doctor`/`pull` call this; after
+    recording, `sync-seams` regenerates + preflight #8 hashes each file like any other seam."""
+    repo = resolve_repo_dir(args)
+    if not args.source:
+        die("--source is required (e.g. core-v0.2) — it stamps the seam's provenance in the manifest")
+
+    targets = [(".opencode/agent/%s.md" % n, _opencode_agent_template(n)) for n in _OPENCODE_AGENTS]
+    targets += [(".opencode/plugins/%s" % p,
+                 _read_core_root_file(os.path.join(_OPENCODE_PLUGIN_DIR, p))) for p in _OPENCODE_PLUGINS]
+    targets += [("opencode.json", _read_file_seam_template(FILE_SEAM_TEMPLATES["opencode.json"]))]
+
+    mpath = manifest_path(repo)
+    manifest = load_manifest(mpath)
+
+    wrote = kept = 0
+    for rel, tmpl in targets:
+        abs_path = os.path.join(repo, *rel.split("/"))
+        ours = tmpl.encode("utf-8")
+        if os.path.lexists(abs_path):
+            if not _real_within(repo, abs_path):
+                die("refusing to touch %s — it resolves OUTSIDE the repo (symlink escape): %s" % (rel, abs_path))
+            if os.path.isdir(abs_path) and not os.path.islink(abs_path):
+                print("gen-opencode: LEFT AS-IS — %s is a directory; kickoff will not manage it "
+                      "(kept: not ours — move it aside and re-run to adopt the core set)" % rel)
+                kept += 1
+                continue
+            try:
+                with open(abs_path, "rb") as f:
+                    existing = f.read()
+            except OSError as exc:
+                die("cannot read the existing file at %s: %s" % (rel, exc))
+            if existing != ours:
+                # Theirs, not ours (or ours, hand-edited). Leave it exactly as it is, record
+                # nothing, and SAY SO — disclosure is the requirement, not a footnote.
+                print("gen-opencode: LEFT AS-IS — %s already exists and is not ours; your file is "
+                      "untouched and kickoff will not manage it (kept: not ours). To adopt the "
+                      "core version, move your file aside and re-run." % rel)
+                kept += 1
+                continue
+        _write_seam(repo, abs_path, tmpl, mode=0o644)
+        _upsert_entry(manifest, {"path": rel, "action": "created", "class": "seam",
+                                 "source": args.source, "sha256_at_write": sha256_file(abs_path)})
+        wrote += 1
+
+    # ── the AGENTS.md pointer (created ONLY when it can dangle-proof itself: CLAUDE.md present,
+    #    link absent; a pre-existing AGENTS.md of any shape is NEVER touched) ──────────────────
+    linked = 0
+    link_abs = os.path.join(repo, "AGENTS.md")
+    if os.path.lexists(link_abs):
+        pass  # theirs (or ours, intact) — never clobber a root-level operator file
+    elif os.path.isfile(os.path.join(repo, "CLAUDE.md")):
+        if not _real_within(repo, link_abs):
+            die("refusing to create AGENTS.md — it resolves OUTSIDE the repo (symlink escape)")
+        os.symlink("CLAUDE.md", link_abs)
+        _upsert_entry(manifest, {"path": "AGENTS.md", "action": "created", "class": "seam",
+                                 "source": args.source, "symlink_target": "CLAUDE.md"})
+        linked = 1
+    else:
+        print("gen-opencode: AGENTS.md pointer SKIPPED — no CLAUDE.md in this repo to point at "
+              "(opencode.json's instructions reference it; create CLAUDE.md and re-run)")
+
+    save_manifest(mpath, manifest)
+    print("gen-opencode: %d file(s) written + recorded, %d kept (adopter-owned, left as-is), "
+          "%d symlink row(s) [%s]  → %s"
+          % (wrote, kept, linked, args.source, mpath))
+    return 0
+
+
+def _render_agent_charter(template_text, name, description):
+    """Render a gap-filler charter from .claude/agent-charter-template.md — correct-by-construction.
+    The template is: an intro prose block, then the actual charter inside a ``` fence (frontmatter +
+    role + `## Report to Mission Control` + `## Boundaries` + `## Honest-stage`), then a
+    `<!-- CANON:START … -->`/`<!-- CANON:END -->` block OUTSIDE the fence. We emit the fenced charter
+    body (name/description filled, `<name>` placeholders substituted) followed by the CANON block —
+    dropping ONLY the template's author-facing intro + fence markers. Preserving the template's own
+    `tools:` line means the emitted charter is NON-WILDCARD by construction (the session narrows it
+    per domain later); the Report-to-MC section + CANON block travel verbatim, so a rendered gap-filler
+    can never ship missing its lane-streaming or its inherited quality bar."""
+    lines = template_text.splitlines()
+
+    # 1) the CANON block (from CANON:START through CANON:END, inclusive) — lives OUTSIDE the fence.
+    canon_start = canon_end = None
+    for i, ln in enumerate(lines):
+        if "CANON:START" in ln:
+            canon_start = i
+        if "CANON:END" in ln:
+            canon_end = i
+            break
+    if canon_start is None or canon_end is None or canon_end < canon_start:
+        die("FATAL — agent charter template is missing its CANON block: %s" % _AGENT_CHARTER_TEMPLATE)
+    canon_block = "\n".join(lines[canon_start:canon_end + 1])
+
+    # 2) the fenced charter body: between the FIRST ``` line and the NEXT ``` line.
+    fence_idxs = [i for i, ln in enumerate(lines) if ln.strip() == "```"]
+    if len(fence_idxs) < 2:
+        die("FATAL — agent charter template is missing its fenced charter body: %s" % _AGENT_CHARTER_TEMPLATE)
+    body = lines[fence_idxs[0] + 1:fence_idxs[1]]
+
+    # 3) fill the frontmatter name/description; substitute the remaining <name> placeholders (role +
+    #    the Report-to-MC lane commands) so the emitted lane commands are runnable as-is.
+    out = []
+    did_name = did_desc = False
+    for ln in body:
+        if not did_name and ln.startswith("name:"):
+            out.append("name: %s" % name); did_name = True; continue
+        if not did_desc and ln.startswith("description:"):
+            out.append("description: %s" % description); did_desc = True; continue
+        out.append(ln)
+    if not (did_name and did_desc):
+        die("FATAL — agent charter template frontmatter lost its name:/description: line: %s"
+            % _AGENT_CHARTER_TEMPLATE)
+    body_text = "\n".join(out).replace("<name>", name)
+
+    return body_text.rstrip("\n") + "\n\n" + canon_block.rstrip("\n") + "\n"
+
+
+def cmd_gen_agent(args):
+    """Generate a NEW gap-filler specialist charter into the adopter repo + record it as
+    created/seeded-instance (adopter-owned: KEPT on a plain eject, PURGED on `eject --purge`).
+    Slice 1's crew-probe.py VALIDATES which domains are uncoverd + what may be proposed; this is the
+    GENERATOR the coordinator runs once the human approves a gap-filler for an uncovered domain.
+
+    Correct-by-construction (rendered from .claude/agent-charter-template.md): the emitted `tools:`
+    line is NON-WILDCARD (least-privilege — the session narrows it per domain), and the
+    `## Report to Mission Control` section + the CANON quality-bar block are always present.
+
+    NEVER CLOBBERS: if `.claude/agents/<name>.md` already exists, REFUSE (die). Unlike gen-shim (which
+    upserts a SEAM it owns), a gap-filler charter — once written — is the ADOPTER's; overwriting it
+    would break the 'mesh via hook, never edit their charters' invariant. Mirrors cmd_gen_charter's
+    seeded-instance record + symlink-safe write."""
+    repo = resolve_repo_dir(args)
+    name = args.name
+    if not _AGENT_NAME_RE.match(name):
+        die("--name must be kebab-case (^[a-z0-9][a-z0-9-]{0,63}$), got: %r — it names a "
+            "Mission-Control lane AND a file under .claude/agents/, so it is validated hard" % name)
+    if not args.domain:
+        die("--domain is required — the uncovered domain this gap-filler owns (from crew-probe.py)")
+    if not args.source:
+        die("--source is required (e.g. core-v0.9) — it stamps the charter's provenance in the manifest")
+    # Frontmatter-injection guard: --domain + --description are free text but land in the emitted YAML
+    # frontmatter (verbatim). Reject a newline/control char so an injected line can't close the
+    # frontmatter early and smuggle a wildcard `tools:` past the least-privilege guarantee. (--name is
+    # already hard-validated above for the same structural-output reason.)
+    _reject_frontmatter_ctrl(args.domain, "--domain")
+    if args.description is not None:
+        _reject_frontmatter_ctrl(args.description, "--description")
+
+    rel = ".claude/agents/%s.md" % name
+    abs_path = os.path.join(repo, ".claude", "agents", "%s.md" % name)
+
+    # HARD refuse-on-clobber (lexists → catches a dangling symlink too): gen-agent only CREATES new
+    # gap-fillers. Editing an existing charter is out of scope — that is the adopter's file.
+    if os.path.lexists(abs_path):
+        die("REFUSING to clobber an existing charter: %s — gen-agent only CREATES new gap-fillers; "
+            "editing/overwriting an existing agent's charter would break the 'mesh via hook, never "
+            "edit their charters' invariant. Remove it first if you truly mean to regenerate." % rel)
+
+    description = args.description or (
+        "The %s specialist — owns %s for this repo (gap-filler; fill in scope before dispatch)."
+        % (args.domain, args.domain))
+
+    try:
+        with open(_AGENT_CHARTER_TEMPLATE, "r", encoding="utf-8") as f:
+            template_text = f.read()
+    except OSError as e:
+        die("FATAL — agent charter template missing: %s (%s) — is this a complete core checkout?"
+            % (_AGENT_CHARTER_TEMPLATE, e))
+
+    content = _render_agent_charter(template_text, name, description)
+    _write_seam(repo, abs_path, content, mode=0o644)
+
+    mpath = manifest_path(repo)
+    manifest = load_manifest(mpath)
+    _upsert_entry(manifest, {"path": rel, "action": "created", "class": "seeded-instance",
+                             "source": args.source, "sha256_at_write": sha256_file(abs_path)})
+    save_manifest(mpath, manifest)
+    print("gen-agent: wrote %s (0644, seeded-instance for domain '%s') + recorded [%s]  → %s"
+          % (rel, args.domain, args.source, mpath))
+    return 0
+
+
+# ── gen-upgrade-turnkey (v0.9 slice 2) ──────────────────────────────────────────────────────────
+# THE INVARIANT: the emitted turnkey is POLICY-NEUTRAL. An upgrade changes the VERSION, never the
+# model policy. The 2026-07-13 miss (memory/retarget-preserves-stale-policy-defaults.md): a
+# HAND-retargeted turnkey carried `WORKER_MODEL="${UPG_MODEL:-fable}"` and clobbered an adopter's
+# own MODEL=opus pin, pointing a LIVE worker at an exhausted model. The fix is structural, on three
+# levels: (1) this generator has NO --model/--effort knob, so there is nothing to bake; (2) the
+# template resolves the pin at RUN time from the adopter's OWN instance.env; (3) _assert_policy_
+# neutral() re-reads the RENDERED text and REFUSES to emit if a model family was ever bound as the
+# UPG_MODEL/UPG_EFFORT default — so even a hand-edit of the template cannot ship a clobbering turnkey.
+_TURNKEY_TEMPLATE = "upgrade-turnkey.sh.tmpl"
+
+# Fail-closed validation (REJECT, never sanitize) — this generator EMITS BASH the operator runs as
+# himself, so every interpolated value is untrusted. shlex.quote ALONE is insufficient (a newline
+# survives it); a regex ALONE is insufficient (a quote-safe value can still be nonsense). Do both.
+# `\A…\Z`, never `^…$`: in python `$` ALSO matches just before a trailing newline, so `^core-v0\.23$`
+# happily accepts "core-v0.23\n" — and that newline is the whole attack. A rendered header line is
+# `# ship-@@VER@@.sh — publish @@TAG@@`; a version carrying a newline splits it and the remainder
+# lands in EXECUTABLE position (observed: `line 4: .sh: command not found` from a rendered turnkey).
+# Every value validator below is anchored with \Z for exactly that reason.
+_TK_NAME_RE = re.compile(r"\A[a-z0-9][a-z0-9._-]{0,63}\Z")   # also an `ls` GLOB prefix → no metachars
+_TK_VER_RE = re.compile(r"\Acore-v[0-9]+(\.[0-9]+){1,2}\Z")  # a release tag, never an arbitrary ref
+_TK_ORG_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}\Z")
+
+# The lines that MUST survive rendering verbatim — the runtime read of the adopter's own pin AND
+# the mirror-the-engine defaults. The MODEL default chain has NO baked family (empty ⇒ inherit the
+# box, exactly as session-run.sh does); the EFFORT default is 'high' (session-run.sh's own default),
+# NEVER 'xhigh'. Pinning these EXACT lines means a hand-edit back to the buggy `${_cur_model:-opus}`
+# / `${_cur_effort:-xhigh}` form fails this presence check outright.
+_TK_REQUIRED_LINES = (
+    '_cur_model="$(read_env_var MODEL)"',
+    '_cur_effort="$(read_env_var EFFORT)"',
+    'WORKER_MODEL="${UPG_MODEL:-$_cur_model}"',
+    'WORKER_EFFORT="${UPG_EFFORT:-${_cur_effort:-high}}"',
+)
+# Any model FAMILY, or any effort tier OTHER than the engine default 'high', bound as a `${…:-DEFAULT}`
+# value ANYWHERE in the resolution chain is a BAKED policy — refuse to emit. This is the fix for the
+# 2026-07-14 miss: the OLD guard `\$\{UPG_(?:MODEL|EFFORT):-(?!\$\{_cur_)` only rejected a family bound
+# DIRECTLY as the UPG_* default, so the NESTED innermost form `${UPG_MODEL:-${_cur_model:-opus}}` — a
+# family one level deeper — sailed through and imposed opus/xhigh on a DEFAULT (no-pin) adopter that
+# the engine would run at inherit-box/high. 'high' is the ONE legal literal default (it is
+# session-run.sh's own `--effort "${EFFORT:-high}"`); MODEL has NO legal literal default (an unset
+# MODEL must inherit the box, so no family may ever appear after a `:-`).
+_TK_MODEL_FAMILIES = ("opus", "sonnet", "haiku", "fable")
+_TK_NONDEFAULT_EFFORTS = ("xhigh", "max", "low", "medium")   # 'high' is the ONE legal engine default
+_TK_BAKED_POLICY_RE = re.compile(
+    r":-\s*\$?\{?\s*(?:" + "|".join(_TK_MODEL_FAMILIES + _TK_NONDEFAULT_EFFORTS) + r")\b")
+
+
+# ── shared turnkey-render guards (BOTH generators) ──────────────────────────────────────────────
+# Every turnkey template opens with a HEADER of `#` comments above `set -uo pipefail` — the prose
+# the operator actually reads. Interpolated values land IN it (@@SELF@@, @@PROV@@, @@VERDICT@@), so
+# the header is not decoration: a value carrying a NEWLINE breaks out of its comment and the next
+# line is EXECUTABLE. Not theory — `--out "$W/out/pwn"$'\n'"touch SYNTH-RCE"$'\n'"#.sh"` put a bare
+# `touch SYNTH-RCE` at line 11 of a rendered ship turnkey, and running it with NO --push (a PREVIEW,
+# the run the operator makes precisely BECAUSE it is safe) created the file. The value regexes are
+# the first line; this assertion is the structural second one: whatever a validator ever lets
+# through, nothing above `set -uo pipefail` may be anything but blank, the shebang, or a comment.
+_TURNKEY_SET_LINE = "set -uo pipefail"
+
+
+def _assert_header_inert(text, what):
+    """Every line above `set -uo pipefail` must be INERT — blank, the shebang, or a `#` comment.
+    Returns the index of that line: the header/code boundary both generators' guards split on."""
+    lines = text.splitlines()
+    try:
+        hdr_end = lines.index(_TURNKEY_SET_LINE)
+    except ValueError:
+        die("REFUSING to emit a %s with no `%s` line — it is the boundary that tells the HEADER "
+            "(the prose the operator reads) from the CODE, and an unset-tolerant turnkey acts "
+            "silently on an empty variable." % (what, _TURNKEY_SET_LINE))
+    for i, ln in enumerate(lines[:hdr_end]):
+        s = ln.strip()
+        if not s or s.startswith("#"):
+            continue
+        die("REFUSING to emit a %s whose HEADER carries an EXECUTABLE line at line %d:\n"
+            "    %s\n"
+            "  Everything above `%s` must be blank, the shebang, or a `#` comment. A line that is "
+            "none of those is there because an interpolated value carried a NEWLINE and broke out "
+            "of its comment — i.e. arbitrary code in a file the operator runs as himself, reached "
+            "by a PREVIEW run that pushes nothing and is therefore trusted."
+            % (what, i + 1, s[:100], _TURNKEY_SET_LINE))
+    return hdr_end
+
+
+# --out is the one interpolated value that is a PATH, and it lands in the header (@@SELF@@). Same
+# posture as every other value: REJECT, never sanitize. Absolute (both generators abspath it first,
+# so a relative arg is normalised before this sees it), no newline, no shell metacharacter, and it
+# must end `.sh` — a turnkey is a script, and the extension is what the operator types.
+_OUT_PATH_RE = re.compile(r"\A/[A-Za-z0-9._@+/-]{0,255}\.sh\Z")
+
+
+def _validated_out_path(raw):
+    """Normalise an --out to an absolute path and REFUSE anything that is not a plain script path."""
+    out = os.path.abspath(os.path.expanduser(raw))
+    if not _OUT_PATH_RE.match(out):
+        die("--out %r is not a safe script path (absolute, ending '.sh', characters "
+            "[A-Za-z0-9._@+/-] only — no newline, no shell metacharacter). It is interpolated into "
+            "the emitted script's HEADER, so a newline there is not a bad filename: it is a line of "
+            "CODE in a file the operator runs as himself, executed even on a --push-less PREVIEW. "
+            "REFUSED, not escaped." % (out,))
+    return out
+
+
+def _assert_policy_neutral(text):
+    """The structural guarantee, checked on the RENDERED bytes right before they are written: this
+    generator physically cannot emit a turnkey that imposes a model policy on an adopter.
+      • the runtime read of THEIR instance.env is present verbatim (and below read_env_var, whose
+        subshell SOURCE is the engine's real parse — a sed/grep regex returns the LITERAL
+        '${MODEL:-opus}' on the self-ref form scripts/instance.env.example ships);
+      • nothing is bound as the ${UPG_MODEL:-…}/${UPG_EFFORT:-…} default except that runtime read;
+      • PERMISSION_MODE is never persisted into instance.env (v0.7 G1 §2.3 — it is deliberately OFF
+        the engine's _INSTANCE_ENV_WHITELIST: the autonomy grant flows argv/terminal-env ONLY, so a
+        line there is a no-op that LOOKS like it works and arms autonomy the day the list widens).
+      • the HEADER is INERT — every line above `set -uo pipefail` is blank, the shebang, or a `#`
+        comment. @@SELF@@/@@PROV@@ land there, and a value carrying a newline puts a bare command
+        in executable position (the --out hole, closed here for the whole CLASS rather than the one
+        instance: this assertion holds even if a future value regex is loosened).
+    HARD, not advisory: a turnkey that clobbers an adopter's pin bricks a live worker."""
+    _assert_header_inert(text, "upgrade turnkey")
+    for want in _TK_REQUIRED_LINES:
+        if want not in text:
+            die("REFUSING to emit a turnkey that lost the runtime policy read (missing: %s) — the "
+                "template must resolve MODEL/EFFORT from the ADOPTER's instance.env at run time, "
+                "never bake one. An upgrade changes the VERSION, never the model policy." % want)
+    # Scan CODE lines only — a `#` comment cannot execute, and the template's own header legitimately
+    # explains the bug shape. The danger is an ASSIGNMENT, which is never on a comment line.
+    for i, line in enumerate(text.splitlines(), 1):
+        if line.lstrip().startswith("#"):
+            continue
+        if _TK_BAKED_POLICY_RE.search(line):
+            die("REFUSING to emit a turnkey with a BAKED model/effort policy at line %d: %s\n"
+                "  A model FAMILY, or an effort tier other than 'high', is bound as a ${…:-DEFAULT} "
+                "ANYWHERE in the resolution chain (including the nested innermost `${_cur_*:-opus}` / "
+                "`${_cur_*:-xhigh}` form). That imposes a durable policy: the 07-13 miss clobbered an "
+                "adopter's MODEL=opus pin; its mirror image imposes opus/xhigh on a DEFAULT (no-pin) "
+                "adopter the engine would run at inherit-box model / effort 'high'. The only legal "
+                "MODEL default is the adopter's OWN pin (empty ⇒ inherit the box); the only legal "
+                "EFFORT literal default is 'high' (session-run.sh's own)." % (i, line.strip()))
+    if "persist_env_var PERMISSION_MODE" in text:
+        die("REFUSING to emit a turnkey that persists PERMISSION_MODE into instance.env — it is "
+            "deliberately OFF the engine's _INSTANCE_ENV_WHITELIST (v0.7 G1 §2.3). The autonomy "
+            "grant flows argv / terminal env ONLY.")
+
+    # the ordering the whole fix rests on: the policy read must live BELOW read_env_var's definition
+    if text.index("read_env_var(){") > text.index('_cur_model="$(read_env_var MODEL)"'):
+        die("REFUSING to emit a turnkey whose policy read precedes read_env_var()'s definition — "
+            "that ordering accident is exactly what forced the broken sed read in the hand-written "
+            "turnkeys.")
+
+
+def _write_turnkey(abs_path, content, force, repo):
+    """Write the turnkey to an ARBITRARY absolute path (default $HOME) — atomically, 0755.
+
+    DELIBERATELY NOT _write_seam(): every sibling gen-* verb writes a seam INSIDE the adopter repo
+    and records a manifest receipt, and _write_seam hard-refuses any path outside the repo. This
+    turnkey is the OPPOSITE by design — it is an OPERATOR artifact that lands in $HOME, never in the
+    adopter's tree, so it is NOT a seam, gets NO manifest entry, is NOT in FILE_SEAM_TEMPLATES, and
+    `sync-seams`/preflight #8 must never see it. (Registering it as a file seam would make preflight
+    hash a repo file that never exists → a fail-closed brick on EVERY adopter.) If you came here to
+    "fix" the missing receipt: don't — the asymmetry is the point.
+
+    That asymmetry is ENFORCED here, not merely documented: a --out inside `repo` would drop an
+    untracked 0755 script into the tree the manifest is the ledger for — a file with no receipt, in
+    the one place every seam/preflight check assumes has one. It used to be accepted (rc 0)."""
+    rp = os.path.realpath(repo)
+    op = os.path.realpath(os.path.dirname(abs_path) or ".")
+    if op == rp or op.startswith(rp + os.sep):
+        die("REFUSING to write a turnkey INSIDE the repo: %s is under %s.\n"
+            "  A turnkey is an OPERATOR artifact: it lands outside the tree, carries NO manifest "
+            "receipt, and is deliberately absent from FILE_SEAM_TEMPLATES. Writing one into the "
+            "repo drops an untracked 0755 script where every seam check assumes a receipt exists. "
+            "Pass an --out outside the repository." % (abs_path, rp))
+    if os.path.lexists(abs_path) and not force:
+        die("refusing to overwrite an existing turnkey: %s (pass --force). The operator's real, "
+            "already-run turnkeys live at exactly this default path — clobbering one is not "
+            "reversible for them." % abs_path)
+    parent = os.path.dirname(abs_path)
+    if not os.path.isdir(parent):
+        die("--out parent directory does not exist: %s" % parent)
+    fd, tmp = _open_secure_tmp(abs_path, suffix=".turnkey.tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.chmod(tmp, 0o755)
+        os.replace(tmp, abs_path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def cmd_gen_upgrade_turnkey(args):
+    """Generate the operator's one-tap adopter upgrade script (v0.9 slice 2).
+
+      adopt-manifest.py gen-upgrade-turnkey --repo <adopter> --name <slug> --version core-vX.Y[.Z]
+
+    Emits `~/upgrade-<name>-to-<X.Y[.Z]>.sh` — the fail-closed, backup-taking, conjunctively-
+    adjudicated, --rollback-able hop the v0.8.1 turnkeys proved, plus a READ-ONLY --dry-run.
+
+    POLICY-NEUTRAL BY CONSTRUCTION (the whole point — see _assert_policy_neutral): there is no
+    --model/--effort flag to bake, the emitted script reads the ADOPTER's own MODEL/EFFORT from
+    THEIR .kickoff/instance.env at RUN time (defaulting only when genuinely unset), and the render
+    is re-checked before it is written. The autonomy grant rides argv (`kickoff up --auto`), never
+    instance.env.
+
+    Everything derivable is DERIVED at run time by the emitted script — engine dir, current tag,
+    commit, remote + its local-vs-network class (a baked class would LIE the moment the remote is
+    re-pointed), MODEL/EFFORT. Args carry only the genuinely un-derivable: which adopter, what slug,
+    which target tag. --repo must be a REGISTERED adopter (a turnkey aimed at a non-adopter would
+    pull an engine into a random dir — a brick).
+
+    Writes NOTHING into the adopter repo and records NO manifest receipt (see _write_turnkey)."""
+    repo = resolve_repo_dir(args)
+    repo = os.path.realpath(repo)
+
+    name = args.name
+    if not _TK_NAME_RE.match(name or ""):
+        die("--name %r is not a safe slug (^[a-z0-9][a-z0-9._-]{0,63}$). It is interpolated into a "
+            "BASH script AND used as an `ls` glob prefix, so shell metacharacters and globs are "
+            "REFUSED, not escaped." % (name,))
+    tag = args.version
+    if not _TK_VER_RE.match(tag or ""):
+        die("--version %r is not a core release tag (^core-v[0-9]+(\\.[0-9]+){1,2}$ — e.g. "
+            "core-v0.8.1). An arbitrary git ref is refused: the turnkey adjudicates the pull on "
+            "core.lock naming exactly this tag." % (tag,))
+    org = args.org if args.org else name
+    if not _TK_ORG_RE.match(org):
+        die("--org %r is not a safe display name (^[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}$). It lands in "
+            "a bash string; a `$(…)` there would RUN in the operator's shell." % (org,))
+
+    if not os.path.isdir(repo):
+        die("--repo is not a directory: %s" % repo)
+
+    # The registry is the house key: only a REGISTERED adopter gets a turnkey.
+    rpath = _registry_path(args)
+    registry = _load_registry(rpath)
+    row = None
+    for a in registry.get("adopters", []):
+        if _canon_repo(a.get("repo")) == repo:
+            row = a
+            break
+    if row is None:
+        die("--repo %s is NOT a registered adopter (%s). A turnkey aimed at a non-adopter would "
+            "pull an engine into a random directory. Register it first (adopters-register) or "
+            "point --registry at the right ledger." % (repo, rpath))
+
+    # Provenance is COMMENT-ONLY. Reading the adopter's live MODEL here and baking it as a default
+    # would re-create the exact stale-snapshot bug class — the emitted script reads it at RUN time.
+    cur = row.get("tag")
+    cur = cur if isinstance(cur, str) and _TK_VER_RE.match(cur) else "<unpinned>"
+    prov = "generated %s · adopter pinned at %s · target %s (MODEL/EFFORT are read at RUN time)" % (
+        time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), cur, tag)
+
+    ver = tag[len("core-"):]                      # core-v0.8.1 → v0.8.1
+    out = _validated_out_path(
+        args.out or os.path.join(os.path.expanduser("~"), "upgrade-%s-to-%s.sh" % (name, ver)))
+
+    bkp = "%s-upgrade-backup" % name
+    pm = args.permission_mode
+    up_args = "up --auto --detach" if pm == "auto" else "up --detach"
+    grant_env = "PERMISSION_MODE=auto" if pm == "auto" else ""
+
+    # Substitute with OPAQUE tokens + str.replace — never .format()/%/string.Template: bash is
+    # saturated with `{`, `}`, `$` and `%`. *_Q tokens carry a shlex.quote'd value and are expanded
+    # into their OWN `_DEF_*` var, never into a nested `${VAR:-word}` default (where `word` is STILL
+    # EXPANDED — the concrete command-execution hole).
+    text = _read_file_seam_template(_TURNKEY_TEMPLATE)
+    for token, value in (
+        ("@@ORG_Q@@", shlex.quote(org)),
+        ("@@REPO_Q@@", shlex.quote(repo)),
+        ("@@TAG_Q@@", shlex.quote(tag)),
+        ("@@BKP_Q@@", shlex.quote(bkp)),
+        ("@@GRANT_ENV@@", grant_env),
+        ("@@UP_ARGS@@", up_args),
+        ("@@PM@@", pm),
+        ("@@NAME@@", name),
+        ("@@VER@@", ver),
+        ("@@TAG@@", tag),
+        ("@@ORG@@", org),
+        ("@@SELF@@", out),
+        ("@@PROV@@", prov),
+    ):
+        text = text.replace(token, value)
+    left = re.search(r"@@[A-Z_]+@@", text)
+    if left:
+        die("internal: unsubstituted template token %s — refusing to emit" % left.group(0))
+
+    _assert_policy_neutral(text)
+
+    # A syntax-broken one-tap run against a LIVE worker is a bricking path. No shellcheck on the
+    # box; `bash -n` is the available validator — run it on the rendered text BEFORE writing.
+    chk = subprocess.run(["bash", "-n"], input=text.encode("utf-8"),
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if chk.returncode != 0:
+        die("REFUSING to write a turnkey that fails `bash -n`:\n%s"
+            % chk.stderr.decode("utf-8", "replace").strip())
+
+    _write_turnkey(out, text, args.force, repo)
+    print("gen-upgrade-turnkey: wrote %s (0755)\n"
+          "  adopter:  %s (registered, pinned at %s)\n"
+          "  target:   %s\n"
+          "  policy:   NEUTRAL — MODEL/EFFORT read from %s/.kickoff/instance.env at RUN time\n"
+          "  autonomy: %s (argv only — never persisted into instance.env)\n"
+          "  rehearse: bash %s --dry-run   (read-only)"
+          % (out, repo, cur, tag, repo, up_args, out))
+    return 0
+
+
+# ── gen-ship-turnkey (v0.23) ────────────────────────────────────────────────────────────────────
+# THE INVARIANT: a release turnkey states the REAL gate verdict beside the SHA it was MEASURED ON,
+# and REFUSES to push a branch that is not that SHA.
+#
+# THE MISS THIS CLOSES (2026-07-25, release/core-v0.20): the ship turnkey's three preconditions —
+# the branch still fast-forwards the remote's main, the tag does not exist, the plugin-version
+# invariant holds — ALL PASS ON A STALE BRANCH. So a staged release sat for a full day carrying the
+# very blocker its release was being held for, while the turnkey's own header advertised a gate run
+# from a DIFFERENT commit. Three green checks and a confident header, and the thing on offer was not
+# the thing that was tested. The verdict was true when it was written; it was a rumour by the time
+# the operator read it.
+#
+# The fix is three things, and each one is asserted on the RENDERED bytes before they are written
+# (_assert_ship_guards — the "correct by construction" pattern _assert_policy_neutral established):
+#   1. GATED_AT — the SHA the gate certified is PINNED into the emitted script, and the script
+#      REFUSES if the branch tip differs. It is verified AT GENERATION TIME too: a --gated-at that
+#      does not resolve, or that is not the current tip of the release branch, DIES here. A turnkey
+#      stamped with a SHA that was never the tip is the copied-claim bug in its birth form.
+#   2. The header carries the verdict AND the gated SHA side by side, and the guard asserts the
+#      header's SHA is the SAME one the pin refuses on — a header that can disagree with the pin is
+#      exactly the artifact that shipped.
+#   3. `--no-verify` on the two release pushes, with its justification comment. The repo's pre-push
+#      runs the full declared battery; the release gate already ran those suites on a detached
+#      worktree of the exact commit being pushed, so re-running costs a full pass per push AND runs
+#      them against the DEV tree, which is not the thing being shipped. That is safe for ONE reason:
+#      the freshness guard proved the tip is what the gate certified. The justification comment is
+#      LOAD-BEARING, not decoration — it is the only thing that stops a future reader copying
+#      `--no-verify` onto an ungated push — so the guard refuses any `--no-verify` push that is not
+#      preceded by it, and refuses any `--no-verify` at all above the freshness refusal.
+_SHIP_TEMPLATE = "ship-turnkey.sh.tmpl"
+
+# Fail-closed validation (REJECT, never sanitize) — same posture as _TK_*: this generator EMITS BASH
+# the operator runs as himself, so shlex.quote ALONE is insufficient (a newline survives it) and a
+# regex ALONE is insufficient (a quote-safe value can still be nonsense). Do both, on every value.
+# `\A…\Z` throughout — python's `$` also matches before a TRAILING NEWLINE, so `^…$` accepts
+# "core-v0.23\n" and that newline breaks the rendered header line into executable position.
+_SHIP_SHA_RE = re.compile(r"\A[0-9a-f]{40}\Z")           # a FULL sha — an abbrev can become ambiguous
+_SHIP_BRANCH_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9._/-]{0,79}\Z")
+# The verdict lands in a bash string AND in a `#` header line. Constrained to a printable one-liner
+# with NO shell metacharacter, NO backtick, NO `$`, NO quote, NO `@` (which could forge a @@TOKEN@@)
+# and NO newline (which would break the header out of its comment and into executable position).
+_SHIP_VERDICT_RE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9 ,.:;()\[\]/%+=-]{0,159}\Z")
+
+# The lines that MUST survive rendering verbatim. Pinning the EXACT refusal condition means a
+# hand-edit that softens it (`=` for `!=`, a `||` short-circuit, a `warn` instead of an exit) fails
+# this presence check outright rather than silently shipping a turnkey that no longer refuses.
+_SHIP_REFUSAL_LINE = 'if [ "$BRC" != "$GATED_AT" ]; then'
+_SHIP_PREVIEW_GATE = 'if [ "$PUSH" -eq 0 ]; then'
+_SHIP_JUSTIFY_ANCHOR = "# ── why these pushes skip the pre-push hook ──"
+_SHIP_JUSTIFY_RULE = "Never `--no-verify` a push that was not gated."
+# Phrases the justification must actually CONTAIN — so gutting the body while keeping the anchor
+# (the shape a hurried edit takes) is refused too. Matched against the block with its comment
+# markers stripped and its wrapping collapsed, so re-flowing the paragraph is fine; deleting the
+# reasoning is not.
+_SHIP_JUSTIFY_PHRASES = ("The release gate ALREADY ran", "the freshness guard proved")
+_SHIP_GATED_AT_RE = re.compile(r'^GATED_AT="([0-9a-f]{40})"$', re.M)
+# `[ \t]`, never `\s` — `\s` MATCHES A NEWLINE, so `^#\s+verdict:\s+(\S.*)$` happily spans two lines
+# and reads the NEXT header line as the verdict. Caught by the 'header-verdict-blank' mutation lane:
+# a header whose verdict had been emptied still "matched", on the `gated at:` line below it. A guard
+# that can satisfy itself from the wrong line is not a guard.
+_SHIP_HDR_VERDICT_RE = re.compile(r"^#[ \t]+verdict:[ \t]+(\S[^\n]*?)[ \t]*$", re.M)
+_SHIP_HDR_SHA_RE = re.compile(r"^#[ \t]+gated at:[ \t]+([0-9a-f]{40})[ \t]*$", re.M)
+
+# Detecting an irreversible command by `line.startswith("git push")` is one rename away from blind:
+# `eval "git push …"`, `git -C . push` and `$GIT push` ALL sail past it, and all three are real ways
+# to put a push above the --push gate. Match on the line's EXECUTABLE text instead — quoted literals
+# blanked out, trailing comment dropped — so the PREVIEW block's `echo "  1. git push …"` reads as
+# the prose it is, while `eval "git push …"` reads as the command it is.
+_SHIP_QUOTED_RE = re.compile(r"'[^']*'|\"[^\"]*\"")
+# `(?<![-\w])` and not plain `\b`: the argv parser's own `--push)` case arm and `--tags` flags are
+# not commands, and a rule that trips on them would be tuned back off within a week.
+_SHIP_PUSH_RE = re.compile(r"(?<![-\w])push\b")
+_SHIP_TAG_RE = re.compile(r"(?<![-\w])tag\b")
+_SHIP_GIT_RE = re.compile(r"\bgit\b")
+_SHIP_EVAL_RE = re.compile(r"\beval\b")
+
+
+def _ship_exec_text(line):
+    """The part of a line that can EXECUTE: quoted literals blanked out (BLANKED, not deleted — two
+    words must not fuse across the gap into a token neither of them was), then the trailing `#`
+    comment dropped. A whole-line comment yields "", which is precisely MED-3: an `exit 1` inside a
+    comment satisfied the old "the refusal must EXIT" scan, so a refusal that printed and fell
+    through to the push was accepted."""
+    s = _SHIP_QUOTED_RE.sub(lambda mo: " " * len(mo.group(0)), line)
+    # bash's own rule: `#` opens a comment only at the START OF A WORD. A blind `s.find("#")` would
+    # truncate at the `#` in `${x#y}` and drop everything after it — including a `push` — which is
+    # fail-OPEN in a scan whose whole job is to notice one.
+    h = next((k for k, c in enumerate(s) if c == "#" and (k == 0 or s[k - 1].isspace())), -1)
+    return s if h < 0 else s[:h]
+
+
+# Control operators that end one simple command and begin the next. A scan that looks at a whole
+# LINE cannot tell `echo "git push …"` (prose) from `echo hi && git push` (a push); splitting into
+# simple commands first is what makes the command WORD meaningful.
+def _ship_drop_comment(line):
+    """The line with its trailing `#` comment removed but its QUOTES INTACT (unlike
+    `_ship_exec_text`, which blanks quoted spans). A `#` opens a comment only at the start of a
+    word AND outside quotes — `git push "a#b"` has no comment, and `${x#y}` is not one either."""
+    spans = [(mo.start(), mo.end()) for mo in _SHIP_QUOTED_RE.finditer(line)]
+    for k, c in enumerate(line):
+        if c != "#" or not (k == 0 or line[k - 1].isspace()):
+            continue
+        if any(a <= k < b for a, b in spans):
+            continue
+        return line[:k]
+    return line
+
+
+
+
+
+
+def _assert_executes_unconditionally(lines, idx, what):
+    """Prove the line at `idx` RUNS — at top level, on every path — rather than merely being present.
+
+    THIS IS BLOCKER 1. The old guard checked the refusal's TEXT (`lines.index(_SHIP_REFUSAL_LINE)`
+    plus a substring scan for `exit 1`). Wrapping the whole block in
+    `if [ "${SHIP_SKIP_FRESHNESS:-0}" = 0 ]; then … fi` left every literal byte IDENTICAL: the
+    generator exited 0, the suite stayed 76 passed / 0 failed, and the emitted turnkey then printed
+    "gated tree : 9513c01 matches the branch tip ✓" while the tip was 868a725 — and pushed an
+    ungated commit and tag. A guard that reads bytes cannot see a predicate wrapped around them.
+
+    Two independent facts, both structural:
+      • ZERO INDENTATION — an indented line is inside something, full stop;
+      • EVERY BLOCK OPENED ABOVE IT IS CLOSED — proven by BASH ITSELF. Feed bash the prefix ending
+        just before this line and require it to parse. Anything still open (if / while / until /
+        for / case / select / function / `{` / `(` / a heredoc) leaves that prefix syntactically
+        INCOMPLETE and `bash -n` says so. A keyword table of ours can be out-argued by a shape we
+        did not think of; bash's own parser cannot."""
+    if lines[idx] != lines[idx].lstrip():
+        die("REFUSING to emit a ship turnkey whose %s is INDENTED at line %d (%r). Indentation "
+            "means it sits inside a block — i.e. it runs only when that block's condition holds. "
+            "This line must execute on EVERY path, so it lives at column 0."
+            % (what, idx + 1, lines[idx][:80]))
+    prefix = "\n".join(lines[:idx]) + "\n"
+    chk = subprocess.run(["bash", "-n"], input=prefix.encode("utf-8"),
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if chk.returncode != 0:
+        die("REFUSING to emit a ship turnkey whose %s at line %d is NOT at top level — some block "
+            "opened above it is still OPEN there, so it is CONDITIONAL:\n"
+            "    %s\n"
+            "  (proof: bash cannot parse the script truncated just above that line). A refusal "
+            "wrapped in `if [ \"${SOME_VAR:-0}\" = 0 ]; then … fi` is byte-identical to a real one "
+            "and ships an ungated push. Un-nest it."
+            % (what, idx + 1, chk.stderr.decode("utf-8", "replace").strip()[:200]))
+
+
+def _ship_line_index(lines, needle, what):
+    """The index of the line that IS `needle` — allowing surrounding whitespace so an indented copy
+    is caught by _assert_executes_unconditionally with a written message, rather than crashing out
+    of `list.index` with a traceback. The prose is the product; a traceback is not."""
+    i = next((k for k, ln in enumerate(lines) if ln.strip() == needle), None)
+    if i is None:
+        die("REFUSING to emit a ship turnkey in which %s (%s) does not appear as its own line. It "
+            "is present in the text only as part of a longer line — inside a string, a comment, or "
+            "an `eval` — which is not a guard, it is a mention of one." % (what, needle))
+    return i
+
+
+def _assert_ship_guards(text):
+    """The structural guarantee, checked on the RENDERED bytes right before they are written: this
+    generator physically cannot emit a ship turnkey that (a) would push a branch the gate never saw,
+    (b) advertises a verdict measured somewhere else, or (c) carries `--no-verify` without the one
+    argument that makes it legal. HARD, not advisory — the artifact this guards performs the single
+    irreversible act in the release, and it is read once, at speed, by someone about to publish."""
+    lines = text.splitlines()
+
+    # ── 0. the render must be complete and syntactically real ────────────────────────────────────
+    left = re.search(r"@@[A-Z_]+@@", text)
+    if left:
+        die("REFUSING to emit a ship turnkey with an unsubstituted template token (%s) — a literal "
+            "'@@TOKEN@@' in a release script is a value the generator failed to supply, and bash "
+            "would treat it as a bare word rather than fail." % left.group(0))
+    # The header/code split — AND the assertion that the header is INERT. The split alone never
+    # checked that: --out was interpolated into header lines 10-11 with no regex and no shlex.quote,
+    # so a newline in it emitted a bare `touch SYNTH-RCE` at line 11 and a PREVIEW run executed it.
+    hdr_end = _assert_header_inert(text, "ship turnkey")
+    header = "\n".join(lines[:hdr_end])
+    # It must PARSE — no shellcheck on the box; `bash -n` is the available validator. This runs
+    # FIRST (it used to be last) because the top-level assertions below prove un-nestedness by
+    # parsing PREFIXES of this text: on a file that does not parse at all, a prefix failure would be
+    # blamed on nesting. A syntax error found mid-release strands a staged branch and no script.
+    chk = subprocess.run(["bash", "-n"], input=text.encode("utf-8"),
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    if chk.returncode != 0:
+        die("REFUSING to write a ship turnkey that fails `bash -n`:\n%s\n"
+            "  A syntax error here is discovered by the operator mid-release, with a staged branch "
+            "and no script that ships it." % chk.stderr.decode("utf-8", "replace").strip())
+
+    # ── 1. the GATED_AT pin and its refusal branch ───────────────────────────────────────────────
+    m = _SHIP_GATED_AT_RE.search(text)
+    if not m:
+        die("REFUSING to emit a ship turnkey with no GATED_AT pin (a bare `GATED_AT=\"<40-hex>\"` "
+            "line). Without the pin the three ordinary preconditions — fast-forwards main, tag is "
+            "new, plugin invariant — ALL PASS ON A STALE BRANCH, which is how a release sat for a "
+            "day carrying the very blocker it was held for.")
+    pinned = m.group(1)
+    if _SHIP_REFUSAL_LINE not in text:
+        die("REFUSING to emit a ship turnkey that pins GATED_AT but never REFUSES on it (missing: "
+            "%s). A recorded SHA that nothing compares against is a comment, not a guard — and it "
+            "reads exactly like one that works." % _SHIP_REFUSAL_LINE)
+    refusal_i = _ship_line_index(lines, _SHIP_REFUSAL_LINE, "the freshness refusal")
+    _assert_executes_unconditionally(lines, refusal_i, "freshness refusal")
+    # `_ship_exec_text`, not `in ln` — an `exit 1` inside a COMMENT is not an exit, and the old
+    # substring scan happily accepted `  # note: we used to exit 1 here`.
+    # Scoped to the refusal's OWN `if … fi`, not a 12-line window. A proximity scan accepted a
+    # refusal whose real `exit 1` had been deleted and replaced by `[ -f /nonexistent ] && exit 1`
+    # AFTER the `fi`: the window saw an `exit 1`, the branch printed and fell through, and the
+    # turnkey pushed. The exit has to be on a path the refusal itself takes.
+    fi_i = next((k for k in range(refusal_i + 1, len(lines))
+                 if lines[k].strip() == "fi" and not lines[k][:1].isspace()), None)
+    if fi_i is None:
+        die("REFUSING to emit a ship turnkey whose freshness refusal at line %d never closes with a "
+            "top-level `fi`. If the branch has no visible end, nothing can be proven about what "
+            "runs inside it." % (refusal_i + 1))
+    if not any("exit 1" in _ship_exec_text(ln) for ln in lines[refusal_i:fi_i]):
+        die("REFUSING to emit a ship turnkey whose freshness refusal does not EXIT (no executable "
+            "`exit 1` INSIDE its own branch, lines %d-%d — a mention in a comment, in a string, or "
+            "after the `fi` does not count). A guard that prints and falls through to the push is "
+            "worse than none: it produces a warning nobody reads and ships anyway."
+            % (refusal_i + 1, fi_i + 1))
+
+    # The refusal compares BRC against GATED_AT — so anything that REASSIGNS either between the pin
+    # and the comparison silently makes the comparison true. Four confirmed variants shipped an
+    # ungated tag with every gate green, e.g. `[ -f "$REPO/.ship-anyway" ] && BRC="$GATED_AT"` at
+    # column 0 (invisible to the nesting proof) or a hatch keyed on a file rather than an env var
+    # (invisible to the hostile-env lane). One assignment each, or the comparison means nothing.
+    # Anywhere the assignment would START A SIMPLE COMMAND — not just column 0. The first version of
+    # this rule anchored at `\A\s*` and every confirmed bypass walked straight through it, because
+    # they all hang the assignment off a control operator: `[ -f "$REPO/.ship-anyway" ] && BRC=…`.
+    for var in ("BRC", "GATED_AT"):
+        pat = re.compile(r"(?:\A|[;&|(]|\bthen\b|\bdo\b|\belse\b|\{)\s*%s=" % var)
+        assigns = [i for i, ln in enumerate(lines) if pat.search(_ship_exec_text(ln))]
+        if len(assigns) != 1:
+            die("REFUSING to emit a ship turnkey that assigns %s %d times (lines %s). The freshness "
+                "refusal compares these two values, so a SECOND assignment anywhere is an override: "
+                "`%s=\"$GATED_AT\"` makes the comparison pass on a branch that moved, and the "
+                "operator-facing output is byte-identical to a real check passing."
+                % (var, len(assigns), ", ".join(str(i + 1) for i in assigns) or "none", var))
+
+    # A refusal that runs, exits, and is still defeated: redefining `exit` (or the commands the
+    # refusal uses) turns the whole branch into a no-op that PRINTS THE FULL REFUSAL and then
+    # pushes. Confirmed. Nothing in a ship turnkey has any business shadowing these.
+    defs = {}
+    for i, ln in enumerate(lines):
+        fn = re.match(r"\A\s*(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)", _ship_exec_text(ln))
+        if not fn:
+            continue
+        name = fn.group(1)
+        # Shadowing what the proof itself rests on. The turnkey legitimately defines its OWN helpers
+        # (`die`, `say`) — but nothing may redefine the shell's exit, git, or test.
+        if name in ("exit", "git", "return", "test", "["):
+            die("REFUSING to emit a ship turnkey that redefines `%s` at line %d. Shadowing it makes "
+                "every guard below decorative — a refusal can print in full and still fall through "
+                "to the push, which is the one output an operator has no way to distrust."
+                % (name, i + 1))
+        if name in defs:
+            die("REFUSING to emit a ship turnkey that defines `%s` twice (lines %d and %d). The "
+                "second definition wins at run time, so a helper the guards rely on can be replaced "
+                "with a no-op far from where it is used — the same override shape as a second "
+                "assignment to GATED_AT." % (name, defs[name] + 1, i + 1))
+        defs[name] = i
+
+    # ── 2. the header states the REAL verdict and the SHA it was MEASURED ON ─────────────────────
+    hv = _SHIP_HDR_VERDICT_RE.search(header)
+    if not hv:
+        die("REFUSING to emit a ship turnkey whose header carries no `verdict:` line. The operator "
+            "reads the header, once, immediately before publishing — a turnkey that does not state "
+            "what the gate actually said invites the reader to assume it said yes.")
+    hs = _SHIP_HDR_SHA_RE.search(header)
+    if not hs:
+        die("REFUSING to emit a ship turnkey whose header states a verdict with no `gated at:` SHA "
+            "beside it. A verdict without the commit it was measured on is a rumour — that is "
+            "literally the artifact that advertised a gate run from a DIFFERENT commit for a day.")
+    if hs.group(1) != pinned:
+        die("REFUSING to emit a ship turnkey whose header SHA (%s) is NOT the SHA it refuses on "
+            "(%s). This is the copied-claim bug exactly: the header says one commit was gated while "
+            "the guard admits another. They must be the same string or the header is decoration."
+            % (hs.group(1)[:12], pinned[:12]))
+
+    # ── 3. --no-verify: never above the refusal, never without its justification ─────────────────
+    # Quote-stripped, not a raw substring: the spelling `--no-""verify` contains no literal
+    # `--no-verify` ANYWHERE in the source, yet bash runs one. Reading the raw substring meant the
+    # justification requirement could be skipped entirely while the flag still reached git.
+    def _mentions_nv(ln):
+        """`--no-verify` as bash would see it. The spelling `--no-""verify` contains no literal
+        `--no-verify` anywhere in the source, yet bash runs one — quote removal is the whole trick,
+        so strip the quote characters and look again."""
+        # The RAW line, comments included — a mention above the refusal is refused even in prose.
+        return "--no-verify" in ln or "--no-verify" in ln.replace('"', "").replace("'", "")
+
+    first_nv = next((i for i, ln in enumerate(lines) if _mentions_nv(ln)), None)
+    if first_nv is not None and first_nv < refusal_i:
+        die("REFUSING to emit a ship turnkey that mentions `--no-verify` at line %d, ABOVE the "
+            "freshness refusal at line %d. The gate-skip is only defensible downstream of the proof "
+            "that the tip is what the gate certified; anything above that line is an ungated push "
+            "wearing a gated push's flag." % (first_nv + 1, refusal_i + 1))
+    def _is_nv_push(ln):
+        """A line that EXECUTES a `--no-verify` push. The flag is read off the RAW line (it may be
+        inside the string an `eval` runs); the push is read off the EXECUTABLE text (so the PREVIEW
+        block's `echo "  1. git push --no-verify …"` is prose, not a push)."""
+        if not _mentions_nv(ln):
+            return False
+        ex = _ship_exec_text(ln)
+        return bool(_SHIP_PUSH_RE.search(ex) or _SHIP_EVAL_RE.search(ex))
+
+    nv_pushes = [i for i, ln in enumerate(lines) if _is_nv_push(ln)]
+    # Gated on the FLAG, not on our ability to recognise the push that carries it. The old form
+    # (`if nv_pushes:`, populated by startswith("git push")) meant an `eval "git push --no-verify"`
+    # skipped the justification requirement ENTIRELY — the detector's blind spot silently disarmed
+    # the check that the detector was there to trigger.
+    if "--no-verify" in text or first_nv is not None:
+        if _SHIP_JUSTIFY_ANCHOR not in text:
+            die("REFUSING to emit a ship turnkey with a `--no-verify` push (line %d) and no "
+                "justification block ('%s'). The comment is LOAD-BEARING, not decoration: it is the "
+                "only thing standing between a future reader and copying this flag onto a push that "
+                "nothing gated."
+                % ((nv_pushes[0] if nv_pushes else first_nv) + 1, _SHIP_JUSTIFY_ANCHOR))
+        anchor_i = next((i for i, ln in enumerate(lines)
+                         if ln.startswith(_SHIP_JUSTIFY_ANCHOR)), None)
+        if anchor_i is None:
+            die("REFUSING to emit a ship turnkey whose `--no-verify` justification anchor ('%s') is "
+                "not at the start of its own line — it is indented, or quoted inside something. An "
+                "argument a reader has to go looking for is not an argument."
+                % _SHIP_JUSTIFY_ANCHOR)
+        block = []
+        for ln in lines[anchor_i:]:
+            if not ln.lstrip().startswith("#"):
+                break
+            block.append(ln.lstrip().lstrip("#").strip())
+        block_text = " ".join(block)
+        for want in _SHIP_JUSTIFY_PHRASES + (_SHIP_JUSTIFY_RULE,):
+            if want not in block_text:
+                die("REFUSING to emit a ship turnkey whose `--no-verify` justification lost its "
+                    "reasoning (missing from the block: %r). A gutted comment that still opens with "
+                    "the right heading is the worst version of this file: it LOOKS argued. The block "
+                    "must say what the gate already ran, why re-running it would test the wrong tree, "
+                    "and end on the flat rule '%s'" % (want, _SHIP_JUSTIFY_RULE))
+        if nv_pushes and anchor_i > nv_pushes[0]:
+            die("REFUSING to emit a ship turnkey whose `--no-verify` justification (line %d) comes "
+                "AFTER the push it justifies (line %d). A reader scanning downward hits the flag "
+                "first and the argument never." % (anchor_i + 1, nv_pushes[0] + 1))
+
+    # ── 4. PREVIEW by default: no push command may sit above the --push gate ─────────────────────
+    if _SHIP_PREVIEW_GATE not in text:
+        die("REFUSING to emit a ship turnkey with no PREVIEW gate (missing: %s). Preview-by-default "
+            "is what makes this file safe to run to find out what it does — without it the first "
+            "run IS the irreversible one." % _SHIP_PREVIEW_GATE)
+    gate_i = _ship_line_index(lines, _SHIP_PREVIEW_GATE, "the PREVIEW gate")
+    # The gate shares the refusal's weakness exactly: a gate nested inside a condition is a gate
+    # with a way around it. Same proof — column 0, and nothing open above it.
+    _assert_executes_unconditionally(lines, gate_i, "PREVIEW gate")
+    # Scan the EXECUTABLE text, not `startswith("git push")`: `eval "git push …"`, `git -C . push`
+    # and `$GIT push` were all ACCEPTED above the gate by the old prefix match (plain `git push` was
+    # the one form it caught — the positive control that made it look like it worked). Above the
+    # gate nothing legitimately pushes, tags, or evals, so the rule up here is flat and total.
+    # Scanned on the executable text AND on the same text with quote CHARACTERS removed — bash's own
+    # quote removal keeps the word, so `git "push" …` really does push while blanking quoted spans
+    # made it read as a bare `git`. That gap let a PREVIEW run (no `--push`) push to origin.
+    #
+    # DELIBERATELY NOT a bash-faithful tokeniser. This scan is a DRIFT detector — its job is to catch
+    # a future edit that moves a push above the gate, not to out-argue someone hand-crafting an
+    # evasion in a file they can already edit freely (anyone who can rewrite this template can also
+    # delete this guard). The semantic proof lives where it belongs: the suite RUNS the emitted
+    # artifact with no `--push` against a fixture remote and asserts the remote SHA is unchanged.
+    # A text scan approximating bash will always have both false positives and false negatives; the
+    # behavioural lane has neither.
+    for i, ln in enumerate(lines[:gate_i]):
+        ex = _ship_exec_text(ln)
+        why = ("a push" if _SHIP_PUSH_RE.search(ex)
+               else "an `eval` (which can push anything, opaquely)" if _SHIP_EVAL_RE.search(ex)
+               else "a tag" if (_SHIP_GIT_RE.search(ex) and _SHIP_TAG_RE.search(ex))
+               else None)
+        if why:
+            die("REFUSING to emit a ship turnkey that runs %s at line %d, ABOVE the --push gate at "
+                "line %d:\n    %s\n  A preview that pushes is not a preview — and the preview run "
+                "is the one the operator makes precisely because he believes it cannot do anything."
+                % (why, i + 1, gate_i + 1, ln.strip()[:100]))
+
+
+def cmd_gen_ship_turnkey(args):
+    """Generate the operator's one-tap RELEASE script — the gated, freshness-pinned publish.
+
+      adopt-manifest.py gen-ship-turnkey --branch release/core-vX.Y --version core-vX.Y \\
+          --prev-version core-vX.Z --gated-at <40-hex> --verdict '<what the gate actually said>'
+
+    Emits `~/.kickoff/ship-<vX.Y>.sh`: PREVIEW by default (pushes nothing), `--push` to
+    fast-forward the remote's main, tag, and push the tag.
+
+    REQUIRED args are only the genuinely un-derivable — which branch, which tag, which previous tag,
+    which commit the gate certified, and what it said. Everything else is DERIVED: the repo, the
+    remote, the public installer URL (from the remote at RUN time — a baked owner/repo slug lies the
+    moment the remote is re-pointed), the installer sha, the plugin-version invariant.
+
+    --gated-at is VERIFIED HERE, not trusted: it must be a full 40-hex SHA that RESOLVES in the repo
+    AND equals the current tip of --branch. A turnkey stamped with a SHA that was never the tip is
+    the copied-claim bug in its birth form — it would refuse forever, or worse, be 'fixed' by
+    re-stamping it with whatever the tip happens to be, which is the original miss wearing a patch.
+
+    Writes OUTSIDE the repo, records NO manifest receipt (see _write_turnkey)."""
+    repo = os.path.realpath(resolve_repo_dir(args))
+    if not os.path.isdir(os.path.join(repo, ".git")) and not os.path.isfile(os.path.join(repo, ".git")):
+        die("--repo %s is not a git repository — the ship turnkey is generated FROM the release "
+            "repo, because --gated-at is verified against that repo's branch tip." % repo)
+
+    branch = args.branch
+    if not _SHIP_BRANCH_RE.match(branch or "") or ".." in branch or branch.endswith(".lock") \
+            or branch.startswith("/") or branch.endswith("/") or "//" in branch:
+        die("--branch %r is not a safe ref name (^[A-Za-z0-9][A-Za-z0-9._/-]{0,79}$, no '..', no "
+            "'.lock' suffix, no leading/trailing/doubled '/'). It is interpolated into a BASH script "
+            "AND passed to git as a ref, so it is REFUSED, not escaped." % (branch,))
+    tag = args.version
+    if not _TK_VER_RE.match(tag or ""):
+        die("--version %r is not a core release tag (^core-v[0-9]+(\\.[0-9]+){1,2}$ — e.g. "
+            "core-v0.23). The tag this pushes is public and IRREVERSIBLE; an arbitrary ref is "
+            "refused." % (tag,))
+    prev = args.prev_version
+    if not _TK_VER_RE.match(prev or ""):
+        die("--prev-version %r is not a core release tag (^core-v[0-9]+(\\.[0-9]+){1,2}$). The "
+            "emitted script diffs plugin/ against it to adjudicate the version invariant — a bad "
+            "ref there makes that check pass VACUOUSLY." % (prev,))
+    if prev == tag:
+        die("--prev-version equals --version (%s). The plugin invariant would diff the tag against "
+            "itself and always hold — a check that cannot fail." % tag)
+    gated = args.gated_at
+    if not _SHIP_SHA_RE.match(gated or ""):
+        die("--gated-at %r is not a full 40-hex commit SHA. An abbreviation is refused on purpose: "
+            "the pin is compared as a STRING against `git rev-parse <branch>`, so a short form would "
+            "never match and the turnkey would refuse forever." % (gated,))
+    verdict = args.verdict
+    if not _SHIP_VERDICT_RE.match(verdict or ""):
+        die("--verdict %r is not a constrained one-line verdict (^[A-Za-z0-9][A-Za-z0-9 ,.:;()[]"
+            "/%%+=-]{0,159}$). It lands in a bash string AND in a `#` header line: a newline would "
+            "break it out of the comment into executable position, and a backtick or `$(…)` would "
+            "run in the operator's shell at the moment he is publishing a tag." % (verdict,))
+
+    def _git(*a):
+        p = subprocess.run(["git", "-C", repo] + list(a),
+                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return p.returncode, p.stdout.decode("utf-8", "replace").strip()
+
+    rc, tip = _git("rev-parse", "--verify", "%s^{commit}" % branch)
+    if rc != 0 or not tip:
+        die("--branch %s does not resolve in %s — there is nothing staged to ship. (Stage the "
+            "release branch first, then run the gate on it, then generate this turnkey.)"
+            % (branch, repo))
+    rc, _ = _git("cat-file", "-e", "%s^{commit}" % gated)
+    if rc != 0:
+        die("--gated-at %s does not RESOLVE in %s. A SHA that is not in this repository cannot have "
+            "been gated in it — this is a copied or mistyped verdict, which is the exact failure "
+            "this flag exists to make impossible." % (gated[:12], repo))
+    if tip != gated:
+        die("--gated-at %s is NOT the current tip of %s (tip is %s).\n"
+            "  Generating this turnkey would stamp a verdict onto a commit that is not the one on "
+            "offer — the copied-claim bug in its birth form. Either re-run the release gate on %s "
+            "and pass THAT sha, or re-stage the branch. Never re-stamp the pin to match the tip: "
+            "that 'fixes' the refusal by deleting the only thing that was checking."
+            % (gated[:12], branch, tip[:12], tip[:12]))
+    rc, _ = _git("rev-parse", "--verify", "refs/tags/%s^{commit}" % prev)
+    if rc != 0:
+        die("--prev-version %s is not a tag in %s. The emitted script diffs plugin/ against it; an "
+            "absent ref would make `git diff --quiet` fail open and the version invariant would be "
+            "adjudicated on nothing." % (prev, repo))
+
+    ver = tag[len("core-"):]                      # core-v0.23 → v0.23
+    # Default `~/.kickoff/ship-<ver>.sh` — where the operator's real turnkeys actually live, next to
+    # the rest of the instance state, rather than loose in $HOME. _write_turnkey still refuses to
+    # clobber one without --force, which is the protection that matters at that path.
+    out = _validated_out_path(
+        args.out or os.path.join(os.path.expanduser("~"), ".kickoff", "ship-%s.sh" % ver))
+
+    prov = ("generated %s · verdict MEASURED ON %s (the branch tip at generation time) · target %s"
+            % (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), gated[:12], tag))
+
+    # Substitute with OPAQUE tokens + str.replace — never .format()/%/string.Template: bash is
+    # saturated with `{`, `}`, `$` and `%`. *_Q tokens carry a shlex.quote'd value and are expanded
+    # into their OWN `_DEF_*` var, never into a nested `${VAR:-word}` default (where `word` is STILL
+    # EXPANDED — the concrete command-execution hole).
+    text = _read_file_seam_template(_SHIP_TEMPLATE)
+    for token, value in (
+        ("@@REPO_Q@@", shlex.quote(repo)),
+        ("@@BR_Q@@", shlex.quote(branch)),
+        ("@@TAG_Q@@", shlex.quote(tag)),
+        ("@@PREV_TAG_Q@@", shlex.quote(prev)),
+        ("@@VERDICT_Q@@", shlex.quote(verdict)),
+        ("@@GATED_AT@@", gated),
+        ("@@VERDICT@@", verdict),
+        ("@@PREV_TAG@@", prev),
+        ("@@BR@@", branch),
+        ("@@TAG@@", tag),
+        ("@@VER@@", ver),
+        ("@@SELF@@", out),
+        ("@@PROV@@", prov),
+    ):
+        text = text.replace(token, value)
+
+    _assert_ship_guards(text)
+
+    _write_turnkey(out, text, args.force, repo)
+    print("gen-ship-turnkey: wrote %s (0755)\n"
+          "  branch:   %s @ %s (VERIFIED as the tip at generation time)\n"
+          "  target:   %s   (previous: %s)\n"
+          "  verdict:  %s\n"
+          "  posture:  PREVIEW by default — pushes NOTHING without --push\n"
+          "  rehearse: bash %s          (read-only preview)\n"
+          "  ship:     bash %s --push   (the irreversible step)"
+          % (out, branch, gated[:12], tag, prev, verdict, out, out))
+    return 0
+
+
 def cmd_reconcile(args):
     """G9 — generate .kickoff/adopt-manifest.json for an ALREADY-adopted repo WITHOUT re-wiring
-    anything (the Bliz shape: core.lock present, manifest absent → preflight #8 fail-closed, and
+    anything (the legacy-adopter shape: core.lock present, manifest absent → preflight #8 fail-closed, and
     the only prior recovery — `kickoff adopt` — is a live-WIRING mutation, not a recovery).
 
     FROZEN CONTRACT (phase2-plan invariant 5 — record ONLY what is PROVABLE):
@@ -967,7 +2266,8 @@ def cmd_reconcile(args):
     recorded, reported = [], []
 
     # ── (a) known seam paths — record ONLY a template-byte-match ────────────────────────
-    known = [seam_path_for_shim(n) for n in sorted(SHIM_TEMPLATES)] + sorted(FILE_SEAM_TEMPLATES)
+    known = ([seam_path_for_shim(n) for n in sorted(SHIM_TEMPLATES)] + sorted(FILE_SEAM_TEMPLATES)
+             + list(_OPENCODE_SEAM_PATHS))
     for rel in known:
         abs_path = os.path.join(repo, rel)
         if not os.path.lexists(abs_path):
@@ -1094,6 +2394,79 @@ def cmd_reconcile(args):
     return 0
 
 
+def cmd_resync(args):
+    """Post-delivery re-source: after `kickoff pull <tag>` delivers new seam bytes, the manifest's
+    seam rows still cite their ORIGINAL source tags — so any all-sources==target consistency check
+    fails forever on long-adopted repos, and a fleet sweep must refuse to cycle them.
+
+    For each class=seam entry whose source != --source: if the file ON DISK byte-matches the
+    CURRENT engine template for that path (templates are the delivery contract; verified
+    identical to the tagged core before use), re-source the row to --tag and refresh its
+    sha256_at_write. Bytes that DON'T match are GENUINE DRIFT — reported loudly, never touched,
+    exit non-zero. Non-seam entries and machine_entries: never touched. Idempotent: rows already
+    at --source are skipped, so a second run is a no-op. The ONLY write is the manifest."""
+    repo = resolve_repo_dir(args)
+    mpath = manifest_path(repo)
+    if not os.path.lexists(mpath):
+        die("no manifest at %s — resync re-sources EXISTING manifests only (manifest-less repos "
+            "want `reconcile`; not-yet-adopted repos want `adopt`)." % mpath)
+    if not args.source:
+        die("--source is required (e.g. core-v0.39) — it is the tag the rows will be re-sourced to")
+    manifest = load_manifest(mpath)
+    resourced, skipped, drift = [], [], []
+    for e in manifest.get("entries", []):
+        if e.get("class") != "seam":
+            continue                          # non-seam rows: never touched
+        if e.get("source") == args.source:
+            skipped.append(e.get("path", "?"))
+            continue
+        rel = e.get("path", "")
+        abs_path = os.path.join(repo, rel)
+        if not os.path.isfile(abs_path) or os.path.islink(abs_path) or not _real_within(repo, abs_path):
+            drift.append("%s — missing/symlink/out-of-repo on disk (NOT re-sourced)" % rel)
+            continue
+        tmpl = seam_template_for(rel)
+        if tmpl is None:
+            # No template in THIS engine for that path (e.g. root CLAUDE.md charter block,
+            # root .gitignore — operator-owned hybrids generated with per-repo content).
+            # Not provable, not drift: leave the row exactly as-is, note it, keep going.
+            skipped.append("%s (no template in this engine — left as-is)" % rel)
+            continue
+        try:
+            with open(abs_path, "rb") as f:
+                got = f.read()
+        except OSError as ex:
+            drift.append("%s — unreadable (%s) (NOT re-sourced)" % (rel, ex))
+            continue
+        if got != tmpl.encode("utf-8"):
+            drift.append("%s — disk bytes differ from the %s template (genuine drift: hand-edited "
+                         "or foreign content). NOT re-sourced — inspect before forcing." % (rel, args.source))
+            continue
+        e["source"] = args.source
+        e["sha256_at_write"] = sha256_bytes(got)
+        resourced.append(rel)
+
+    print("resync — repo=%s  (target source=%s)" % (repo, args.source))
+    print("  RE-SOURCED (%d):" % len(resourced))
+    for line in resourced:
+        print("    ~ %s" % line)
+    if not resourced:
+        print("    (none needed — already consistent)")
+    print("  SKIPPED already-at-target (%d):" % len(skipped))
+    for line in skipped:
+        print("    = %s" % line)
+    if not skipped:
+        print("    (none)")
+    if drift:
+        print("  GENUINE DRIFT (%d — NOT re-sourced; resolve by hand or re-pull):" % len(drift))
+        for line in drift:
+            print("    ! %s" % line)
+        return 1
+    save_manifest(mpath, manifest)
+    print("  manifest updated -> %s" % mpath)
+    return 0
+
+
 def _print_seam_diff(repo, abs_path, tmpl, path):
     """A unified diff between the seam AS IT IS ON DISK (hand-edited) and the pinned template,
     so a refused pull SHOWS the operator exactly what would be overwritten (same posture as
@@ -1137,11 +2510,24 @@ def cmd_sync_seams(args):
     regen = current = refused = skipped = 0
     print("adopt-manifest sync-seams — repo=%s  target=%s%s"
           % (repo, src, "  [--force-regenerate]" if force else ""))
-    for e in manifest["entries"]:
-        if e.get("class") != "seam":
-            continue                                # INSTANCE-class is NEVER regenerated
+    seam_entries = [e for e in manifest["entries"]
+                    if e.get("class") == "seam"]    # INSTANCE-class is NEVER regenerated
+    # ── RESOLVE EVERY TEMPLATE BEFORE WRITING ANY SEAM (all-or-nothing on the read side) ──
+    # seam_template_for can die FATAL (a whole-file template absent from this checkout — a
+    # broken/incomplete core). Resolved lazily inside the write loop, that FATAL used to strike
+    # MID-WALK: earlier seams already regenerated on disk while save_manifest below was never
+    # reached — stranding the adopter with file != recorded sha256_at_write, so preflight #8
+    # reds and eject mis-reads kickoff's OWN write as an operator hand-edit. Hoisting the
+    # resolution keeps the FATAL (the correct broken-core backstop) but moves it BEFORE the
+    # first write: a failed resolution aborts with ZERO seams touched and the manifest intact.
+    templates = {}
+    for e in seam_entries:
+        p = e.get("path", "")
+        if p not in templates:
+            templates[p] = seam_template_for(p)
+    for e in seam_entries:
         path = e.get("path", "")
-        tmpl = seam_template_for(path)
+        tmpl = templates[path]
         if tmpl is None:
             # a seam with no whole-file template here (e.g. a block-appended CLAUDE.md, which
             # is regenerated block-wise, not whole-file) — leave it untouched.
@@ -1402,10 +2788,38 @@ def _reverse_created(repo, entry, dry, on_div):
     path = entry["path"]
     abs_path = os.path.join(repo, path)
     want = entry.get("sha256_at_write")
+    link_target = entry.get("symlink_target")
     if not _real_within(repo, abs_path):
         print("  [ FAIL ] created        %s  (resolves OUTSIDE the repo via a symlink — refusing "
               "to delete out-of-repo)" % path)
         return "failed"
+    if link_target:
+        # A created SYMLINK row (e.g. the AGENTS.md → CLAUDE.md pointer): a link's identity is
+        # its target STRING, not file bytes — it is recorded with symlink_target and NO sha256
+        # (verify + preflight #8 skip it, exactly like a hook-installed row) and reversed by
+        # readlink-match. A retargeted or replaced link is DIVERGED — kept, never silent-deleted.
+        if not os.path.islink(abs_path):
+            print("  [ keep ] created        %s  (recorded as a symlink → %s, but it is no longer "
+                  "a symlink — kept, not deleted)" % (path, link_target))
+            return "kept"
+        got_target = os.readlink(abs_path)
+        if got_target == link_target:
+            if dry:
+                print("  [ del? ] created        %s  WOULD delete (symlink → %s matches the record)" % (path, link_target))
+            else:
+                os.remove(abs_path)
+                print("  [ del  ] created        %s  symlink deleted (→ %s)" % (path, link_target))
+            return "deleted"
+        if on_div == "delete":
+            if dry:
+                print("  [ del? ] created        %s  WOULD delete (--on-divergence delete, retargeted)" % path)
+            else:
+                os.remove(abs_path)
+                print("  [ del  ] created        %s  symlink deleted (--on-divergence delete, retargeted)" % path)
+            return "deleted"
+        print("  [ keep ] created        %s  DIVERGED (recorded symlink → %s, now → %s) — kept, "
+              "not deleted" % (path, link_target, got_target))
+        return "kept"
     if not os.path.lexists(abs_path):
         print("  [ gone ] created        %s  (already absent — idempotent)" % path)
         return "skipped"
@@ -1720,11 +3134,35 @@ def cmd_reverse(args):
         # seeded-instance crew (fork #3): a deliverable authored FOR the repo → KEPT by default;
         # reversed only under --purge-seeded, and even then via the same hash-gated, divergence-safe
         # action path (so a crew file edited after adopt is still never silent-deleted).
+        # EXCEPTION — an adopt-CREATED root lefthook.yml is pure kickoff gate-WIRING, not an
+        # operator-content deliverable (the gate content lives in .kickoff/lefthook-kickoff.yml):
+        # keeping it would leave its `extends:` DANGLING at a .kickoff/ file eject removes. It
+        # takes the normal created path below — delete-if-unchanged, keep-if-diverged — so an
+        # operator who edited it after adopt still keeps their file (never clobbered).
+        # WORKSPACE MEMBERS take the SAME exception, for the same reason and no other. A member's
+        # `<m>/lefthook.yml` and its `<m>/.git/hooks/*` are kickoff gate WIRING dropped into a repo
+        # that is not the adopted root — usually somebody's shared checkout. Keeping them leaves
+        # `extends: ../.kickoff/lefthook-member.yml` dangling at a file eject just removed, and
+        # leaves an untracked `lefthook.yml` in every member. SCOPED TIGHTLY to member paths:
+        # `.git/hooks/pre-commit` with NO prefix (the single-repo case) does not match and is still
+        # kept exactly as before.
+        _member_gate_wiring = (
+            action == "created" and "/" in path
+            and not path.split("/")[0].startswith(".")   # `.git/hooks/pre-commit` = single-repo
+            and (path.endswith("/lefthook.yml")
+                 or os.path.basename(path) in ("_kickoff-hook-runner", "pre-commit", "pre-push")))
         if klass == "seeded-instance" and not purge_seeded:
-            print("  [ keep ] %-14s %s  (seeded-instance crew — kept; adopter-owned deliverable)"
-                  % (action, path))
-            counts["kept"] += 1
-            continue
+            if path == "lefthook.yml" and action == "created":
+                print("  [ note ] created        lefthook.yml  (adopt-created gate wiring — its "
+                      "extends target is removed with .kickoff/, so it is reversed, not kept)")
+            elif _member_gate_wiring:
+                print("  [ note ] %-14s %s  (workspace-member gate wiring — its extends target is "
+                      "removed with .kickoff/, so it is reversed, not kept)" % (action, path))
+            else:
+                print("  [ keep ] %-14s %s  (seeded-instance crew — kept; adopter-owned deliverable)"
+                      % (action, path))
+                counts["kept"] += 1
+                continue
 
         if action == "created":
             st = _reverse_created(repo, e, dry, on_div)
@@ -1811,15 +3249,20 @@ REHASH_ALLOWED_PATHS = (".claude/settings.json",)
 
 def cmd_rehash_path(args):
     """Re-record ONLY sha256_at_write for ONE allowlisted path after a LEGITIMATE kickoff-driven
-    write (Phase-2 G6/G7 — the [[reversal-must-be-the-final-write]] fix for the PULL path).
+    FOLLOW-UP write to a path that ALREADY carries a manifest entry (Phase-2 G6/G7 — the
+    [[reversal-must-be-the-final-write]] fix for the PULL path; reused by adopt-time
+    brownfield-devex for the SAME reason — see _adopt_wire_output_style).
 
-    WHY: cmd_pull's marketplace re-point (G6) rewrites .claude/settings.json ON PURPOSE (the
-    extraKnownMarketplaces source must follow the pinned work dir). That is an INTENDED change —
-    reasserting the old bytes would undo the fix — but it leaves the file ≠ its recorded
-    sha256_at_write, so a later eject's hash gate (_reverse_original) would read kickoff's own write
-    as "EDITED by the operator" and SKIP the byte-restore, stranding the plugin keys in the repo.
-    Re-recording sha256_at_write keeps the gate TRUE: eject still byte-restores the pre-adopt
-    `original` exactly.
+    WHY: two kickoff-driven writes can legitimately land on .claude/settings.json — cmd_pull's
+    marketplace re-point (G6, the extraKnownMarketplaces source following the pinned work dir) and
+    `kickoff adopt`'s outputStyle-key merge landing on top of the plugin step's own settings.json
+    touch. Both are INTENDED changes to the SAME logical touch, not a second independent edit —
+    reasserting the old bytes would undo the fix, but recording a SECOND manifest entry would leave
+    the FIRST entry's sha256_at_write permanently stale (cmd_verify hash-checks every entry against
+    the current file, so a second edit makes the first look "EDITED by the operator" forever) and
+    `_reverse_original` would SKIP that entry's byte-restore, stranding the earlier keys in the
+    repo. Re-recording sha256_at_write on the EXISTING entry keeps the gate TRUE: eject still
+    byte-restores the pre-adopt `original` exactly, reversing BOTH writes in one shot.
 
     INVARIANTS (narrow BY CONSTRUCTION — this verb must never become a general manifest editor):
       • PATH-RESTRICTED — hard allowlist (REHASH_ALLOWED_PATHS = .claude/settings.json only). The
@@ -1836,7 +3279,8 @@ def cmd_rehash_path(args):
     path = repo_relative(args.path)
     if path not in REHASH_ALLOWED_PATHS:
         die("REFUSING — rehash-path is restricted to %s (got '%s'). It exists ONLY for kickoff's "
-            "own legitimate settings.json write (the pull-time marketplace re-point); any other "
+            "own legitimate FOLLOW-UP settings.json writes (the pull-time marketplace re-point, "
+            "and adopt-time's outputStyle-key merge over the plugin step's touch); any other "
             "path would launder an edit past eject's hash gate." % (", ".join(REHASH_ALLOWED_PATHS), path))
     # defense-in-depth (unreachable via the allowlist): the credential file is never rehashed.
     if os.path.basename(os.path.normpath(path)) in SECRET_BEARING_BASENAMES:
@@ -2011,8 +3455,23 @@ def cmd_adopters_register(args):
 
 
 def cmd_adopters_remove(args):
-    """Remove THIS adopter's row (keyed by realpath(repo)). A missing registry / row = idempotent."""
-    repo = os.path.realpath(resolve_repo_dir(args))
+    """Remove THIS adopter's row (keyed by realpath(repo)). A missing registry / row = idempotent.
+
+    A DELETED repo dir is removable here, deliberately — this is the one command where the target
+    not existing is the normal case rather than an error. resolve_repo_dir() dies on a missing dir,
+    which is right for every command that then reads that repo's manifest, and exactly wrong for
+    this one: it made the registry rows most likely to be garbage (a fixture whose mktemp tree is
+    long gone) the only rows the remover structurally could not collect. Found 2026-08-10 pruning
+    45 fixture rows: 41 removed, and the 4 whose directories had been deleted survived every attempt.
+    Canonicalize the same way _canon_repo does so the comparison stays apples-to-apples, but do not
+    require existence.
+    """
+    _rd = getattr(args, "repo", None) or os.environ.get("REPO_DIR")
+    if not _rd:
+        _rd = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    repo = _canon_repo(_rd)
+    if not repo:
+        die("FATAL — adopters-remove needs a repo path (set --repo or $REPO_DIR)")
     rpath = _registry_path(args)
     if not os.path.exists(rpath):
         print("adopters-remove: no registry at %s — nothing to remove (idempotent)" % rpath)
@@ -2198,6 +3657,96 @@ def build_parser():
     gr.add_argument("--source", required=True, help="e.g. core-v0.2 — stamps the seam's provenance")
     gr.set_defaults(func=cmd_gen_readme)
 
+    go = sub.add_parser("gen-output-style", parents=[common],
+                        help="generate .claude/output-styles/plain-report.md (seam) from the core's own "
+                             "copy + record it created/seam. Half of the reporting-canon wiring — the "
+                             "other half merges .claude/settings.json's outputStyle key (see `kickoff adopt`).")
+    go.add_argument("--source", required=True, help="e.g. core-v0.2 — stamps the seam's provenance")
+    go.set_defaults(func=cmd_gen_output_style)
+
+    goc = sub.add_parser("gen-opencode", parents=[common],
+                         help="generate the OPENCODE ENGINE-PARITY seam set (5 crew charters — "
+                              "model-pin-stripped for adopters — + 2 plugins + the pin-free adopter "
+                              "opencode.json + the AGENTS.md→CLAUDE.md pointer) + record each "
+                              "created/seam. Never clobbers: a pre-existing differing file is left "
+                              "as-is, disclosed, and NOT recorded.")
+    goc.add_argument("--source", required=True, help="e.g. core-v0.2 — stamps the seam's provenance")
+    goc.set_defaults(func=cmd_gen_opencode)
+
+    ga = sub.add_parser("gen-agent", parents=[common],
+                        help="generate a NEW gap-filler specialist charter into .claude/agents/<name>.md "
+                             "from the charter template (correct-by-construction: least-privilege tools, "
+                             "a Report-to-MC section, the CANON block) + record it created/seeded-instance "
+                             "(adopter-owned: kept on eject, purged on eject --purge). REFUSES to clobber "
+                             "an existing charter.")
+    ga.add_argument("--name", required=True,
+                    help="kebab-case agent name (^[a-z0-9][a-z0-9-]{0,63}$) — names the file AND its MC lane")
+    ga.add_argument("--domain", required=True,
+                    help="the uncovered domain this gap-filler owns (from crew-probe.py's restraint check)")
+    ga.add_argument("--source", required=True, help="e.g. core-v0.9 — stamps the charter's provenance")
+    ga.add_argument("--description", default=None,
+                    help="frontmatter description (default: a domain-derived placeholder)")
+    ga.set_defaults(func=cmd_gen_agent)
+
+    gu = sub.add_parser("gen-upgrade-turnkey", parents=[common],
+                        help="generate the operator's one-tap adopter upgrade script "
+                             "(~/upgrade-<name>-to-<ver>.sh). POLICY-NEUTRAL by construction: it "
+                             "reads the adopter's OWN MODEL/EFFORT at run time — there is "
+                             "deliberately no --model/--effort flag to bake. Writes OUTSIDE the "
+                             "repo and records NO manifest receipt (it is an operator artifact, "
+                             "not a seam).")
+    gu.add_argument("--name", required=True,
+                    help="adopter slug (^[a-z0-9][a-z0-9._-]{0,63}$) — names the file and the "
+                         "backup prefix; also used as an `ls` glob prefix, so it is validated hard")
+    gu.add_argument("--version", required=True,
+                    help="target core release tag, e.g. core-v0.8.1 (^core-v[0-9]+(\\.[0-9]+){1,2}$)")
+    gu.add_argument("--org", default=None, help="display name in the banner (default: --name)")
+    gu.add_argument("--out", default=None,
+                    help="where to write (default: ~/upgrade-<name>-to-<ver>.sh). Refuses to "
+                         "clobber an existing file without --force")
+    gu.add_argument("--permission-mode", dest="permission_mode", default="auto",
+                    choices=["auto", "default"],
+                    help="autonomy posture for the restarted worker — rides ARGV (`kickoff up "
+                         "--auto`), NEVER instance.env (PERMISSION_MODE is deliberately off the "
+                         "engine's instance.env whitelist). default: auto")
+    gu.add_argument("--registry", default=None,
+                    help="adopters registry (default $KICKOFF_ADOPTERS_REGISTRY or "
+                         "~/.kickoff/adopters.json) — --repo MUST be a registered adopter")
+    gu.add_argument("--force", action="store_true", help="overwrite an existing --out")
+    gu.set_defaults(func=cmd_gen_upgrade_turnkey)
+
+    gs = sub.add_parser("gen-ship-turnkey", parents=[common],
+                        help="generate the operator's one-tap RELEASE script "
+                             "(~/.kickoff/ship-<ver>.sh) — "
+                             "PREVIEW by default, --push to fast-forward main + push the tag. "
+                             "FRESHNESS-PINNED by construction: --gated-at is verified to be the "
+                             "current tip of --branch AT GENERATION TIME, pinned into the emitted "
+                             "script, and re-asserted there before any push. Writes OUTSIDE the "
+                             "repo and records NO manifest receipt (an operator artifact, not a seam).")
+    gs.add_argument("--branch", required=True,
+                    help="the staged release branch, e.g. release/core-v0.23 (a safe ref name; "
+                         "REFUSED, not escaped, if it is not)")
+    gs.add_argument("--version", required=True,
+                    help="the tag to publish, e.g. core-v0.23 (^core-v[0-9]+(\\.[0-9]+){1,2}$)")
+    gs.add_argument("--prev-version", dest="prev_version", required=True,
+                    help="the previous release tag, e.g. core-v0.22 — the emitted script diffs "
+                         "plugin/ against it to adjudicate the version invariant")
+    gs.add_argument("--gated-at", dest="gated_at", required=True,
+                    help="the FULL 40-hex commit the release gate actually certified. VERIFIED "
+                         "here: it must resolve in the repo AND be the current tip of --branch. A "
+                         "turnkey stamped with a SHA that was never the tip is the copied-claim bug.")
+    gs.add_argument("--verdict", required=True,
+                    help="what the gate ACTUALLY said, as one constrained printable line (e.g. "
+                         "'7/7 checks, 0 hard failures, 0 advisories, 38/38 declared suites GREEN') "
+                         "— it is printed in the header beside the SHA it was measured on")
+    gs.add_argument("--out", default=None,
+                    help="where to write (default: ~/.kickoff/ship-<ver>.sh — where the operator's "
+                         "real turnkeys live). An absolute path ending '.sh', with no newline and "
+                         "no shell metacharacter: it is interpolated into the emitted script's "
+                         "header. Refuses to clobber an existing file without --force")
+    gs.add_argument("--force", action="store_true", help="overwrite an existing --out")
+    gs.set_defaults(func=cmd_gen_ship_turnkey)
+
     rcn = sub.add_parser("reconcile", parents=[common],
                          help="G9: generate the manifest for an ALREADY-adopted, manifest-less repo "
                               "WITHOUT re-wiring — records ONLY provable artifacts (template-byte-"
@@ -2210,6 +3759,15 @@ def build_parser():
     rcn.add_argument("--core-dir", dest="core_dir", default=None,
                      help="the pinned core clone — its plugin/.claude-plugin/ manifests PROVE which "
                           "marketplace/plugin names are kickoff's (absent → plugin keys stay report-only)")
+
+    rsy = sub.add_parser("resync", parents=[common],
+                         help="post-delivery re-source: after a pull delivers new seam bytes, "
+                              "re-source manifest seam rows whose disk bytes match the current "
+                              "engine template up to --source; genuine drift is reported and "
+                              "exit non-zero; idempotent; writes NOTHING but the manifest")
+    rsy.add_argument("--source", required=True,
+                     help="e.g. core-v0.39 — the delivering tag the matching rows are re-sourced to")
+    rsy.set_defaults(func=cmd_resync)
     rcn.set_defaults(func=cmd_reconcile)
 
     pr = sub.add_parser("plugin-record", parents=[common],
@@ -2334,9 +3892,10 @@ def build_parser():
 
     rh = sub.add_parser("rehash-path", parents=[common],
                         help="re-record ONLY sha256_at_write for an ALLOWLISTED path "
-                             "(.claude/settings.json) after kickoff's own legitimate write — the "
-                             "pull-time marketplace re-point (G6) — so eject's hash gate stays TRUE; "
-                             "never touches original/sha256_before_edit, never any other path")
+                             "(.claude/settings.json) after kickoff's own legitimate FOLLOW-UP "
+                             "write to an ALREADY-recorded entry — the pull-time marketplace "
+                             "re-point (G6) or adopt-time's outputStyle-key merge — so eject's hash "
+                             "gate stays TRUE; never touches original/sha256_before_edit, never any other path")
     rh.add_argument("--path", required=True,
                     help="repo-relative path to re-hash (allowlisted: %s)" % ", ".join(REHASH_ALLOWED_PATHS))
     rh.set_defaults(func=cmd_rehash_path)

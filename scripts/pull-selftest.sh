@@ -67,6 +67,9 @@ KICKOFF="$REPO/scripts/kickoff"
 # .sh scrubs — BEFORE any fixture setup; the per-fixture `export`s below intentionally re-set their own
 # values AFTER this and are preserved. (Post-G10b, TELEGRAM_STATE_DIR is the one that genuinely FAILS this
 # suite when set — the channel-clash check sees the shared ambient channel — not just an accidental dodge.)
+# Ambient git env OVERRIDES `git -C <fixture>` (seen live 2026-08-23: fixture commits+tag
+# landed on a live repo at the v0.39 pin and leaked a stray core-vT tag) - strip it first.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE 2>/dev/null || true
 unset REPO_DIR KICKOFF_CORE_DIR KICKOFF_CORE_REMOTE MC_STATE_FILE MC_TRACKER_FILE \
       MEMORY_DB MEMORY_HOOK_LOG MEMORY_DIR MEMORY_INDEX TELEGRAM_STATE_DIR CHANNEL_SPEC \
       REGROUND_PROMPT PERMISSION_MODE EFFORT MODEL MAX_CONCURRENT_AGENTS DEPLOY_BRANCH \
@@ -82,12 +85,30 @@ chk() { if eval "$2" >/dev/null 2>&1; then ok "$1"; else bad "$1"; fi; }
 # OWN source trips no secret-scanner finding — the same posture as adopt/eject-selftest's $PLANT.
 PLANT='FAKE_TELEGRAM_TOKEN_planted_do_not_store_123'
 
-# ONE EXIT trap cleans every mktemp dir — via a file side-effect so dirs mk() makes inside a
-# $(command-substitution) subshell survive (an in-memory array would be lost there). NEVER a
-# wildcard sweep of /tmp/tmp.* — only the exact dirs we created.
+# ONE EXIT trap: FIRST reap every fixture PROCESS we spawned, THEN clean every mktemp dir — both
+# via a file side-effect so entries recorded inside a $(command-substitution) subshell survive (an
+# in-memory array would be lost there). NEVER a pattern kill / a wildcard sweep of /tmp/tmp.* — only
+# the exact pids + dirs this run created.
+#
+# The proc-reap is the SAFETY NET the inline kills need: this suite spawns long-lived `sleep 300 &`
+# live-supervisor fixtures that are each killed INLINE after their case, but under `set -euo pipefail`
+# a failed assertion (or a SIGINT) BETWEEN a `sleep 300 &` and its inline kill aborts the script and
+# would otherwise leak that process for up to 300s. Recording each spawn's pid + reaping the whole list
+# on EXIT closes that window. (Mirrors scripts/hop-selftest.sh's cleanup(): TERM → KILL each pid.)
 CLEANUP_LIST="$(mktemp)"
+PID_LIST="$(mktemp)"
 mk() { local d; d="$(mktemp -d)"; printf '%s\n' "$d" >> "$CLEANUP_LIST"; printf '%s' "$d"; }
-trap 'while IFS= read -r _d; do [ -n "$_d" ] && rm -rf "$_d"; done < "$CLEANUP_LIST"; rm -f "$CLEANUP_LIST"' EXIT
+rec_pid() { printf '%s\n' "$1" >> "$PID_LIST"; }   # record a fixture pid for the safety-net reap
+_cleanup() {
+  if [ -f "$PID_LIST" ]; then
+    while IFS= read -r _p; do case "$_p" in ''|*[!0-9]*) continue ;; esac; kill -TERM "$_p" 2>/dev/null || true; done < "$PID_LIST"
+    while IFS= read -r _p; do case "$_p" in ''|*[!0-9]*) continue ;; esac; kill -KILL "$_p" 2>/dev/null || true; done < "$PID_LIST"
+    rm -f "$PID_LIST"
+  fi
+  while IFS= read -r _d; do [ -n "$_d" ] && rm -rf "$_d"; done < "$CLEANUP_LIST"
+  rm -f "$CLEANUP_LIST"
+}
+trap _cleanup EXIT
 
 echo "▶ kickoff pull self-test"
 echo
@@ -129,6 +150,43 @@ CL
   # ── evolve to vB: a NEW KICKOFF.md template + a NEW changelog section on top ──
   printf '# KICKOFF (vB)\n\nCHARTER_MARKER_VB — the coordinator charter, improved.\n\n@.kickoff/KICKOFF.local.md\n' \
     > "$core/scripts/templates/KICKOFF.md"
+  # ── vB also INTRODUCES the opencode engine-parity seam set (vA lacks it entirely) — the
+  #    back-fill fixture: an adopter adopted at vA records nothing for these paths, so the
+  #    pull to vB is the only chance to INTRODUCE them (the v0.35 join-time-only lesson).
+  #    The agents/plugins are the REAL core-root bytes (the coordinator carries the real
+  #    model pin — the strip assertion below exercises the real defect, not a defanged copy).
+  mkdir -p "$core/.opencode/agent" "$core/.opencode/plugins"
+  for _oc_agent in builder coordinator deployer planner reviewer; do
+    cp "$REPO/.opencode/agent/$_oc_agent.md" "$core/.opencode/agent/$_oc_agent.md"
+  done
+  cp "$REPO/.opencode/plugins/memory-search.js" "$core/.opencode/plugins/"
+  cp "$REPO/.opencode/plugins/engine-credit.js" "$core/.opencode/plugins/"
+  # the ADOPTER opencode.json template — heredoc-literal like the KICKOFF.md templates above
+  # (fixture self-containment; the real template's own suite — adopt-selftest §12 — holds it
+  #  against the real file, including the no-model-pin stance). The JSON is INDENTED so no
+  # brace sits at column 1: a col-1 `}` inside this function would end any `/^…() {/,/^}/`
+  # extraction of it (the repro tooling does exactly that).
+  cat > "$core/scripts/templates/opencode.json" <<'OC'
+    {
+      "$schema": "https://opencode.ai/config.json",
+      "default_agent": "coordinator",
+      "instructions": [
+        "AGENTS.md"
+      ],
+      "autoupdate": false
+    }
+OC
+  # …and vB's core-manifest gains the set (the existence contract pull enforces).
+  cat >> "$core/scripts/core-manifest.txt" <<'OCM'
+.opencode/agent/builder.md
+.opencode/agent/coordinator.md
+.opencode/agent/deployer.md
+.opencode/agent/planner.md
+.opencode/agent/reviewer.md
+.opencode/plugins/memory-search.js
+.opencode/plugins/engine-credit.js
+scripts/templates/opencode.json
+OCM
   cat > "$core/CORE-CHANGELOG.md" <<'CL'
 # CORE-CHANGELOG
 
@@ -263,6 +321,52 @@ chk "BARE pull pins the highest NON-rc (core-v0.2), never core-v9.9-rc1; EXPLICI
 echo
 
 # ══════════════════════════════════════════════════════════════════════════════════════
+echo "1c. stray-tag filter: BARE pull never AUTO-SELECTS a non-numeric core-v* name"
+# ══════════════════════════════════════════════════════════════════════════════════════
+# Bit live 2026-08-24: fixture-debris `core-vT` in a clone version-sorts ABOVE every numeric tag
+# (letters rank past digits under `sort -V`), so a bare pull pinned the debris as "latest". The
+# auto-select must pick the highest NUMERIC release. (Explicit `pull <tag>` stays literal-by-name
+# by design — the operator asked for it and sees it echoed; see the honest-scope note at the
+# tag-resolution site.)
+git -C "$RC_CORE" commit --allow-empty -qm stray-c; git -C "$RC_CORE" tag core-vT
+RC_STRAY_BARE="$(rc_pull "")"
+chk "BARE pull ignores stray core-vT and pins the highest numeric (core-v0.2)" \
+  "printf '%s' \"\$RC_STRAY_BARE\" | grep -q 'target tag:  core-v0.2' && ! printf '%s' \"\$RC_STRAY_BARE\" | grep -q 'target tag:  core-vT'"
+echo
+
+# ══════════════════════════════════════════════════════════════════════════════════════
+echo "1b. force-moved release tag — the pin describes what origin serves NOW, not local history"
+# ══════════════════════════════════════════════════════════════════════════════════════
+# Bit live 2026-08-22 (the v0.38 cut): a bulk `fetch --tags` does NOT move a local tag that
+# diverged from origin (non-fast-forward needs --force), so an adopter-side clone holding the
+# OLD tag sha kept resolving it and pinned the PREVIOUS release while announcing the new tag
+# name. The fix: after the tag NAME is validated, kickoff force-fetches exactly
+# refs/tags/$tag so resolution sees origin's CURRENT target.
+# ORDER IS THE TEST: the clone must be born BEFORE the upstream move, so its stale local tag
+# pre-dates the pull — a clone made after the move would fetch fresh either way and prove nothing.
+FM_CORE="$(mk)"; mkdir -p "$FM_CORE/scripts/templates"
+git -C "$FM_CORE" init -q; git -C "$FM_CORE" config user.email t@t.t; git -C "$FM_CORE" config user.name t
+cp "$REPO/scripts/preflight.sh"      "$FM_CORE/scripts/preflight.sh"
+cp "$REPO/scripts/adopt-manifest.py" "$FM_CORE/scripts/adopt-manifest.py"
+printf '# KICKOFF\n' > "$FM_CORE/scripts/templates/KICKOFF.md"
+printf 'scripts/preflight.sh\nscripts/adopt-manifest.py\nscripts/templates/KICKOFF.md\nscripts/core-manifest.txt\nCORE-CHANGELOG.md\n' > "$FM_CORE/scripts/core-manifest.txt"
+printf '# CORE-CHANGELOG\n\n## core-v0.1\n\nfirst.\n' > "$FM_CORE/CORE-CHANGELOG.md"
+git -C "$FM_CORE" add -A; git -C "$FM_CORE" commit -qm fm-c1
+git -C "$FM_CORE" tag core-v0.1
+FM_A="$(git -C "$FM_CORE" rev-parse core-v0.1)"
+FM_CL="$(mk)/clone"; git clone -q "$FM_CORE" "$FM_CL"     # adopter clone is born holding tag→FM_A
+git -C "$FM_CORE" commit --allow-empty -qm fm-c2
+git -C "$FM_CORE" tag -f core-v0.1 >/dev/null             # THEN the release tag is force-moved
+FM_B="$(git -C "$FM_CORE" rev-parse core-v0.1)"
+[ "$FM_A" != "$FM_B" ] || { echo "  FAIL fixture degenerate: tag did not move"; exit 1; }
+FM_AD="$(mk)"; mkdir -p "$FM_AD/.kickoff"
+printf 'export KICKOFF_CORE_DIR="%s"\nexport KICKOFF_CORE_REMOTE="%s"\n' "$FM_CL" "$FM_CORE" > "$FM_AD/.kickoff/instance.env"
+FM_OUT="$(KICKOFF_ADOPTERS_REGISTRY="$(mk)/r.json" REPO_DIR="$FM_AD" bash "$KICKOFF" pull core-v0.1 2>&1 || true)"
+chk "force-moved tag: lock pins ORIGIN's current target ($FM_B), never the stale local ref ($FM_A)" \
+  "grep -q \"commit $FM_B\" \"$FM_AD/.kickoff/core.lock\" && ! grep -q \"commit $FM_A\" \"$FM_AD/.kickoff/core.lock\""
+echo
+
+# ══════════════════════════════════════════════════════════════════════════════════════
 echo "2. whole-tree lock (format 2) + preflight #6 dual-format (NEW pass/dirty/wrong-commit/moved; OLD still verifies)"
 # ══════════════════════════════════════════════════════════════════════════════════════
 read -r PC PA <<< "$(build_pin_fixture)"
@@ -322,7 +426,7 @@ run_pf_pin() {   # $1=core (KICKOFF_CORE_DIR + running tree) $2=adopter (REPO_DI
 
 # CASE 1 (the core bug, RED→GREEN): pin scope skips #4 with a LIVE competing supervisor lock → rc=0.
 read -r LSC LSA <<< "$(build_pin_fixture)"
-sleep 300 & LSPID=$!
+sleep 300 & LSPID=$!; rec_pid "$LSPID"
 printf '%s\n' "$LSPID" > "$LSA/.kickoff/supervisor.lock"     # a genuinely LIVE foreign supervisor lock
 run_pf_pin "$LSC" "$LSA"
 kill "$LSPID" 2>/dev/null || true
@@ -334,7 +438,7 @@ chk "pin scope: #4 single-supervisor is SKIPPED (no 'another supervisor is LIVE'
 # CASE 2 (behaviour preserved): the DEFAULT full scope (run_pf sets NO PREFLIGHT_SCOPE) STILL
 # fail-closes on the same live foreign lock — proving the default gate is untouched.
 read -r F4C F4A <<< "$(build_pin_fixture)"
-sleep 300 & F4PID=$!
+sleep 300 & F4PID=$!; rec_pid "$F4PID"
 printf '%s\n' "$F4PID" > "$F4A/.kickoff/supervisor.lock"
 run_pf "$F4C" "$F4A"
 kill "$F4PID" 2>/dev/null || true
@@ -370,7 +474,7 @@ chk "pin scope: session-readiness #3 (memory index) was SKIPPED" \
 # planted in the adopter exits 0 + 'PULL OK', with no misleading 'fix your instance.env' hint.
 read -r I6CLONE I6ADOPTER _I6SNAP <<< "$(build_pull_case "$CORE")"
 I6REG="$(mk)/adopters.json"
-sleep 300 & I6PID=$!
+sleep 300 & I6PID=$!; rec_pid "$I6PID"
 printf '%s\n' "$I6PID" > "$I6ADOPTER/.kickoff/supervisor.lock"
 I6RC=0
 I6OUT="$(KICKOFF_ADOPTERS_REGISTRY="$I6REG" REPO_DIR="$I6ADOPTER" bash "$KICKOFF" pull core-vB 2>&1)" || I6RC=$?
@@ -388,7 +492,7 @@ chk "integration: the pull drops the misleading 'fix your instance.env' hint" \
 # where the env var WOULD select pin scope, skip #4, and exit 0 — which is exactly the regression this
 # case forbids.)
 read -r E7C E7A <<< "$(build_pin_fixture)"
-sleep 300 & E7PID=$!
+sleep 300 & E7PID=$!; rec_pid "$E7PID"
 printf '%s\n' "$E7PID" > "$E7A/.kickoff/supervisor.lock"     # a genuinely LIVE foreign supervisor lock
 E7RC=0
 E7OUT="$(PREFLIGHT_SCOPE=pin REPO_DIR="$E7A" KICKOFF_CORE_DIR="$E7C" bash "$E7C/scripts/preflight.sh" 2>&1)" || E7RC=$?
@@ -432,7 +536,7 @@ chk "CASE8 fixture: core-vOLD's preflight has NO 'scope=pin' marker (it predates
 # adopt against core-vA (the modern core), then ROLL BACK to core-vOLD with the adopter's OWN live lock planted.
 read -r O8CLONE O8ADOPTER _O8SNAP <<< "$(build_pull_case "$C8CORE")"
 O8REG="$(mk)/adopters.json"
-sleep 300 & O8PID=$!
+sleep 300 & O8PID=$!; rec_pid "$O8PID"
 printf '%s\n' "$O8PID" > "$O8ADOPTER/.kickoff/supervisor.lock"     # the adopter's OWN live worker lock
 O8RC=0
 O8OUT="$(KICKOFF_ADOPTERS_REGISTRY="$O8REG" REPO_DIR="$O8ADOPTER" bash "$KICKOFF" pull core-vOLD 2>&1)" || O8RC=$?
@@ -570,7 +674,87 @@ chk "CREDENTIAL-SAFE: the planted secret is ABSENT from all pull output"  "! pri
 # the other half of the Fix-7 lifecycle: `kickoff eject` REMOVES the adopter's registry row.
 chk "registry (pre-eject): the adopter's row is present"                  "[ \"\$(jq '.adopters|length' \"$REG\")\" = 1 ]"
 KICKOFF_ADOPTERS_REGISTRY="$REG" bash "$KICKOFF" eject --dir "$ADOPTER" --no-archive --purge --delete-data --confirm-destroy >/dev/null 2>&1 || true
+# QUOTING RULE (lane D, 2026-08-29): the $(jq …) here MUST stay escaped (\$) like the pre-eject
+# check above — the unescaped form ran the substitution at chk-ARGUMENT time, where the inner
+# \"$REG\" passed LITERAL quote chars into jq's path (ENOENT on "/…/adopters.json"), so the built
+# assertion was [ "" = 0 ] and could NEVER pass; the product behavior (row removed, registry left
+# with 0 rows) was proven healthy by repro. Escaped, the substitution runs INSIDE eval with clean
+# quoting — the same form every passing registry check in this suite uses.
 chk "eject: REMOVES the adopter's registry row (0 rows left — Fix-7 lifecycle)" "[ \"\$(jq '.adopters|length' \"$REG\")\" = 0 ]"
+echo
+
+# ══════════════════════════════════════════════════════════════════════════════════════
+echo "5b. ENGINE-PARITY BACK-FILL: an OLD adopter (manifest lacking the opencode entries) RECEIVES the set on pull core-vB"
+# ══════════════════════════════════════════════════════════════════════════════════════
+# THE v0.35 LESSON, as a lane. sync-seams walks the ADOPTER'S RECORDED ENTRIES — it can UPDATE
+# a seam but never INTRODUCE one. vB introduces the opencode set, and the adopter here was
+# adopted at vA, so its manifest has no opencode rows: if pull only ever synced, this adopter
+# would NEVER receive the set while every leg of the pull reported green. The back-fill must
+# walk the SOURCE's current seam set and deliver what is missing. RED pre-feature (nothing
+# delivers; the first assertion pair below fails on the absent files).
+# jsonc-tolerant parse (the template carries // comments; opencode parses opencode.json as jsonc).
+oc_json_pull() {   # $1 = opencode.json path → parsed dict on stdout (comment lines stripped)
+  python3 -c "
+import json, re, sys
+text = open(sys.argv[1]).read()
+print(json.loads(re.sub(r'^\s*//.*$', '', text, flags=re.M)).get(sys.argv[2], ''))
+" "$1" "$2"
+}
+read -r BCLONE BADOPTER _BSNAP <<< "$(build_pull_case "$CORE")"
+BREG="$(mk)/adopters.json"
+chk "5b fixture sanity: the vA adopter starts with NO opencode wiring (the back-fill precondition)" \
+  "[ ! -e \"$BADOPTER/.opencode\" ] && [ ! -e \"$BADOPTER/opencode.json\" ]"
+BPRC=0
+BPOUT="$(KICKOFF_ADOPTERS_REGISTRY="$BREG" REPO_DIR="$BADOPTER" bash "$KICKOFF" pull core-vB 2>&1)" || BPRC=$?
+chk "5b back-fill pull exits 0 (the delivery never breaks the pin)"                    "[ $BPRC -eq 0 ]"
+chk "5b all 5 crew charters DELIVERED to the old adopter"                              "[ \$(ls \"$BADOPTER/.opencode/agent/\"*.md 2>/dev/null | wc -l) -ge 5 ]"
+chk "5b both plugins DELIVERED (memory-search + engine-credit)"                        "[ -s \"$BADOPTER/.opencode/plugins/memory-search.js\" ] && [ -s \"$BADOPTER/.opencode/plugins/engine-credit.js\" ]"
+chk "5b the adopter opencode.json DELIVERED"                                           "[ -s \"$BADOPTER/opencode.json\" ]"
+chk "5b opencode.json: default_agent == coordinator"                                   "[ \"\$(oc_json_pull \"$BADOPTER/opencode.json\" default_agent)\" = \"coordinator\" ]"
+chk "5b opencode.json: pin-free — NO model/provider key anywhere (the wedge stance)" \
+  "python3 -c \"
+import json, re, sys
+def walk(d):
+    if isinstance(d, dict): return all(k not in ('model','provider') for k in d) and all(walk(v) for v in d.values())
+    if isinstance(d, list): return all(walk(v) for v in d)
+    return True
+text = open('$BADOPTER/opencode.json').read()
+assert walk(json.loads(re.sub(r'^\s*//.*$', '', text, flags=re.M)))\""
+chk "5b the delivered coordinator charter carries NO model pin (stripped at delivery)" \
+  "! grep -q '^model:' \"$BADOPTER/.opencode/agent/coordinator.md\" && ! grep -q 'x-preview-f-free' \"$BADOPTER/.opencode/agent/coordinator.md\""
+chk "5b the other charters travel VERBATIM (builder byte-matches the pinned core)" \
+  "cmp -s \"$BADOPTER/.opencode/agent/builder.md\" \"$BCLONE/.opencode/agent/builder.md\""
+chk "5b the set is RECORDED created/seam (sync-seams + eject own it from here on)" \
+  "[ \$(python3 -c \"import json;print(sum(1 for e in json.load(open('$BADOPTER/.kickoff/adopt-manifest.json'))['entries'] if e['class']=='seam' and (e['path'].startswith('.opencode/') or e['path']=='opencode.json')))\" 2>/dev/null) -ge 8 ]"
+chk "5b the pull DISCLOSED the introduction (an opencode line in its output)"          "printf '%s' \"\$BPOUT\" | grep -qi opencode"
+BPFRC=0; BPFOUT="$(REPO_DIR="$BADOPTER" KICKOFF_CORE_DIR="$BCLONE" bash "$BCLONE/scripts/preflight.sh" 2>&1)" || BPFRC=$?
+chk "5b standalone preflight after the back-fill is GREEN (the new rows hash-verify)"  "[ $BPFRC -eq 0 ]"
+
+# ── the BOXE GUARD — the adopter-owned folklore shape. A pre-existing .opencode with
+#    DIFFERING files (hand-placed, untracked, its own opencode.json carrying a model pin)
+#    is NEVER clobbered: left as-is, disclosed, not recorded — and the pull stays green.
+read -r XCLONE XADOPTER _XSNAP <<< "$(build_pull_case "$CORE")"
+XREG="$(mk)/adopters.json"
+mkdir -p "$XADOPTER/.opencode/agent"
+printf -- '---\ndescription: THEIR OWN hand-placed coordinator\nmode: primary\nmodel: opencode/x-preview-f-free\n---\nTheir bytes.\n' > "$XADOPTER/.opencode/agent/coordinator.md"
+printf '{\n  "default_agent": "coordinator",\n  "provider": { "opencode": { "models": { "x-preview-f-free": {} } } }\n}\n' > "$XADOPTER/opencode.json"
+cp "$XADOPTER/.opencode/agent/coordinator.md" "$XADOPTER/coordinator.pre"
+cp "$XADOPTER/opencode.json"                   "$XADOPTER/opencodejson.pre"
+XPRC=0
+XPOUT="$(KICKOFF_ADOPTERS_REGISTRY="$XREG" REPO_DIR="$XADOPTER" bash "$KICKOFF" pull core-vB 2>&1)" || XPRC=$?
+chk "5b boxe: the pull exits 0 with adopter-owned .opencode present"                   "[ $XPRC -eq 0 ]"
+chk "5b boxe: THEIR coordinator.md is byte-identical after the pull (never clobbered)" "cmp -s \"$XADOPTER/coordinator.pre\" \"$XADOPTER/.opencode/agent/coordinator.md\""
+chk "5b boxe: THEIR opencode.json (with its model pin) is byte-identical"              "cmp -s \"$XADOPTER/opencodejson.pre\" \"$XADOPTER/opencode.json\""
+chk "5b boxe: their files are NOT recorded (eject can never delete them)" \
+  "python3 -c \"
+import json
+m = json.load(open('$XADOPTER/.kickoff/adopt-manifest.json'))
+paths = [e['path'] for e in m['entries']]
+assert 'opencode.json' not in paths and '.opencode/agent/coordinator.md' not in paths\""
+chk "5b boxe: the pull DISCLOSED what it kept (kept/left-as-is lines)"                 "printf '%s' \"\$XPOUT\" | grep -qi 'kept\|left as-is\|not ours'"
+chk "5b boxe: the REST of the set still delivered around theirs"                       "[ -s \"$XADOPTER/.opencode/agent/builder.md\" ] && [ -s \"$XADOPTER/.opencode/plugins/memory-search.js\" ]"
+chk "5b boxe: their planted pin never leaks into the pull output (credential-safe posture)" \
+  "! printf '%s' \"\$XPOUT\" | grep -q 'x-preview-f-free'"
 echo
 
 # ══════════════════════════════════════════════════════════════════════════════════════
@@ -903,6 +1087,14 @@ build_plugin_core() {   # echoes the core path
   cp "$REPO/scripts/adopt-manifest.py" "$core/scripts/adopt-manifest.py"
   cp "$REPO/scripts/templates/kickoff.gitignore"  "$core/scripts/templates/kickoff.gitignore"
   cp "$REPO/scripts/templates/kickoff-README.md"  "$core/scripts/templates/kickoff-README.md"   # R2 seam — sync-seams regenerates .kickoff/README on pull
+  # The output-style seam template — a CORE-ROOT file (adopt-manifest.py's _OUTPUT_STYLE_SRC), not a
+  # scripts/templates/ one. The fixture core MUST carry it: the copied adopt-manifest.py's
+  # seam_template_for resolves the adopter's recorded .claude/output-styles/plain-report.md seam from
+  # THIS core's root, and dies FATAL (correctly — broken-core backstop) if the file is absent. A core
+  # embedding this adopt-manifest.py but lacking the file models no real tag: the real
+  # scripts/core-manifest.txt lists the file as an existence contract, checked by pull step 4a.
+  mkdir -p "$core/.claude/output-styles"
+  cp "$REPO/.claude/output-styles/plain-report.md" "$core/.claude/output-styles/plain-report.md"
   printf '# KICKOFF (vA)\n\nCHARTER — the coordinator charter.\n\n@.kickoff/KICKOFF.local.md\n' > "$core/scripts/templates/KICKOFF.md"
   printf '#!/usr/bin/env bash\n# fake core scan-secrets (stub)\nexit 0\n'   > "$core/scripts/scan-secrets.sh";   chmod +x "$core/scripts/scan-secrets.sh"
   printf '#!/usr/bin/env bash\n# fake core scan-structure (stub)\nexit 0\n' > "$core/scripts/scan-structure.sh"; chmod +x "$core/scripts/scan-structure.sh"
@@ -914,6 +1106,7 @@ scripts/scan-structure.sh
 scripts/templates/KICKOFF.md
 scripts/templates/kickoff.gitignore
 scripts/templates/kickoff-README.md
+.claude/output-styles/plain-report.md
 scripts/core-manifest.txt
 CORE-CHANGELOG.md
 plugin/.claude-plugin/plugin.json
@@ -928,6 +1121,10 @@ MAN
   build_plugin_tree "$core" "0.1.0" "VA"
   git -C "$core" add -A; git -C "$core" commit -qm core-vA; git -C "$core" tag core-vA
   build_plugin_tree "$core" "0.2.0" "VB"
+  # vB CHANGES the style template: an adopter pulling core-vB must REGENERATE the style seam
+  # (cur==recorded → template-changed rewrite), not merely resolve it — so the cross-tag lanes
+  # exercise the seam's write path, and eject's byte-clean round-trip covers the rewritten file.
+  printf '\n<!-- fixture style delta — VB -->\n' >> "$core/.claude/output-styles/plain-report.md"
   printf '# CORE-CHANGELOG\n\n## core-vB — 2026-02-02\n\nVB.\n\n## core-vA — 2026-01-01\n\nVA.\n' > "$core/CORE-CHANGELOG.md"
   git -C "$core" add -A; git -C "$core" commit -qm core-vB; git -C "$core" tag core-vB
   git -C "$core" commit --allow-empty -qm post-vB
@@ -961,7 +1158,7 @@ export MEMORY_DB="$adopter/.kickoff/state/memory-index.db"
 export MEMORY_HOOK_LOG="$adopter/.kickoff/state/memory-hook.log"
 EOF
   KICKOFF_ADOPTERS_REGISTRY="$reg" KICKOFF_CORE_DIR="$clone" CLAUDE_CONFIG_DIR="$cfg" PATH="$stub:$PATH" \
-    bash "$KICKOFF" adopt --dir "$adopter" >/dev/null 2>&1 || true
+    bash "$KICKOFF" adopt --dir "$adopter" --accept </dev/null >/dev/null 2>&1 || true
   printf '%s' "$adopter"
 }
 # read one field of the manifest's .claude/settings.json entry (empty on any failure)
@@ -1285,7 +1482,7 @@ echo
 # ══════════════════════════════════════════════════════════════════════════════════════
 echo "16. install-model NEVER dirties the pinned clone (real pnpm >= 10 mutates its tracked config store)"
 # ══════════════════════════════════════════════════════════════════════════════════════
-# THE INCIDENT (2026-07-10 — broke the Bliz v0.4.1 upgrade real-run): cmd_pull step 4f runs
+# THE INCIDENT (2026-07-10 — broke a legacy adopter's v0.4.1 upgrade real-run): cmd_pull step 4f runs
 # install-model.mjs against the freshly-pinned checkout; its dep install used to run the package
 # manager WITH cwd = that clone, and REAL pnpm >= 10 treats pnpm-workspace.yaml as its WRITABLE
 # config store — `pnpm install` APPENDS fields (ignoredBuiltDependencies …) to that TRACKED file
@@ -1503,6 +1700,824 @@ chk "suite hygiene: §16 planted NO stub node_modules at the suite caller's cwd 
   "[ $S16_CALLER_STUB_PRE -eq 1 ] || [ ! -e ./node_modules/@xenova/transformers ]"
 echo
 
+# ══════════════════════════════════════════════════════════════════════════════════════
+echo "8. v0.7 G1 slice 5 — PULL OK cycles the worker: refresh flag touched + the HONEST bottom line"
+# ══════════════════════════════════════════════════════════════════════════════════════
+# The old tail printed 'restart the worker' HOMEWORK; the new tail (a) touches
+# $REPO_DIR/.kickoff/refresh-requested so a RUNNING worker's supervisor hops within
+# ~POLL_SECONDS (the accelerator — the supervisor's engine-hop watch is the belt; see
+# scripts/hop-selftest.sh for the hop itself), and (b) prints the honest run-state:
+# a LIVE supervisor.lock pid → 'worker is hopping to <tag> now'; absent/stale →
+# 'no worker running — start when ready' (fork 2: a pull PRESERVES run-state — it
+# never starts a stopped worker, and never signals a running one).
+
+# variant A — LIVE worker: a sleep THIS suite owns stands in for the supervisor pid
+# (killed by exact pid right after the run; the pull must not signal it either way).
+read -r _H1CLONE H1AD _H1SNAP <<< "$(build_pull_case "$CORE")"
+sleep 300 & H1PID=$!; rec_pid "$H1PID"
+printf '%s\n' "$H1PID" > "$H1AD/.kickoff/supervisor.lock"
+H1RC=0
+H1OUT="$(KICKOFF_ADOPTERS_REGISTRY="$(mk)/r.json" REPO_DIR="$H1AD" bash "$KICKOFF" pull core-vB 2>&1)" || H1RC=$?
+H1LOCK_AFTER="$(cat "$H1AD/.kickoff/supervisor.lock" 2>/dev/null)"
+H1STILL_ALIVE=0; kill -0 "$H1PID" 2>/dev/null && H1STILL_ALIVE=1
+kill "$H1PID" 2>/dev/null || true
+chk "live worker: PULL OK (rc=0)"                                          "[ $H1RC -eq 0 ]"
+chk "live worker: refresh-requested TOUCHED (the hop accelerator)"         "[ -f \"$H1AD/.kickoff/refresh-requested\" ]"
+chk "live worker: honest bottom line — 'worker is hopping to core-vB now'" \
+  "printf '%s' \"\$H1OUT\" | grep -q 'worker is hopping to core-vB now'"
+chk "live worker: the 'restart the worker' homework line is GONE"          \
+  "! printf '%s' \"\$H1OUT\" | grep -q 'restart the worker'"
+chk "live worker: pull neither signalled nor replaced the supervisor (pid alive, lock unchanged)" \
+  "[ $H1STILL_ALIVE -eq 1 ] && [ \"$H1LOCK_AFTER\" = \"$H1PID\" ]"
+
+# variant B — NO worker (no lock): run-state PRESERVED — pull starts NOTHING.
+read -r _H2CLONE H2AD _H2SNAP <<< "$(build_pull_case "$CORE")"
+H2RC=0
+H2OUT="$(KICKOFF_ADOPTERS_REGISTRY="$(mk)/r.json" REPO_DIR="$H2AD" bash "$KICKOFF" pull core-vB 2>&1)" || H2RC=$?
+chk "no worker: PULL OK (rc=0)"                                            "[ $H2RC -eq 0 ]"
+chk "no worker: refresh-requested touched (consumed harmlessly at the next start)" \
+  "[ -f \"$H2AD/.kickoff/refresh-requested\" ]"
+chk "no worker: honest bottom line — 'no worker running — start when ready:  kickoff up --auto --detach'" \
+  "printf '%s' \"\$H2OUT\" | grep -q 'no worker running — start when ready:  kickoff up --auto --detach'"
+chk "no worker: pull STARTED NOTHING (no supervisor.lock, no session pidfile)" \
+  "[ ! -f \"$H2AD/.kickoff/supervisor.lock\" ] && [ ! -f \"$H2AD/.kickoff/supervisor.session.pid\" ]"
+
+# variant C — STOPPED worker (a STALE lock naming a dead pid): still the honest
+# 'no worker running' line, still nothing started, the stale lock left for `kickoff up`.
+read -r _H3CLONE H3AD _H3SNAP <<< "$(build_pull_case "$CORE")"
+( true ) & H3PID=$!; wait "$H3PID" 2>/dev/null || true          # a genuinely DEAD pid we owned
+printf '%s\n' "$H3PID" > "$H3AD/.kickoff/supervisor.lock"
+H3RC=0
+H3OUT="$(KICKOFF_ADOPTERS_REGISTRY="$(mk)/r.json" REPO_DIR="$H3AD" bash "$KICKOFF" pull core-vB 2>&1)" || H3RC=$?
+H3LOCK_AFTER="$(cat "$H3AD/.kickoff/supervisor.lock" 2>/dev/null)"
+chk "stopped worker (stale lock): PULL OK (rc=0)"                          "[ $H3RC -eq 0 ]"
+chk "stopped worker: honest bottom line is the START command, not a false 'hopping'" \
+  "printf '%s' \"\$H3OUT\" | grep -q 'no worker running — start when ready' && ! printf '%s' \"\$H3OUT\" | grep -q 'worker is hopping'"
+chk "stopped worker: pull started NOTHING (no session pidfile; stale lock untouched)" \
+  "[ ! -f \"$H3AD/.kickoff/supervisor.session.pid\" ] && [ \"$H3LOCK_AFTER\" = \"$H3PID\" ]"
+echo
+
+# ══════════════════════════════════════════════════════════════════════════════════════
+echo "9. v0.7 G1 slice 6 — CROSS-VERSION: the pinned v0.6 cmd_pull drives the v0.7 working-tree tools"
+# ══════════════════════════════════════════════════════════════════════════════════════
+# The byte-stability hinge (design §3 — an adopter's pull runs their OLD pinned front door against
+# the NEW tools mid-run, so those tools' interfaces are a cross-version contract, not an internal one):
+# a v0.6 adopter's `kickoff pull core-v0.7` runs the OLD v0.6 cmd_pull (their pinned front door)
+# calling the NEW v0.7 tools MID-RUN — the freshly-checked-out work_dir's `preflight.sh --pin`
+# (v0.6 also GREPS that source for the literal `scope=pin` token — kickoff:1034@core-v0.6 — to
+# label its verdict honestly) and the work_dir's adopt-manifest.py (sync-seams). Since G1 changes
+# preflight.sh's BYTES, the hinge is INTERFACE stability; this lane proves it instead of arguing
+# it: the REAL v0.6 engine (extracted READ-ONLY via `git archive core-v0.6 scripts` — never a
+# checkout) pulls a fixture tag whose tools are the v0.7 WORKING TREE's, and must land end-to-end
+# green. Frozen contracts asserted explicitly at the end (--pin + scope=pin + adopt-manifest.py's
+# PULL-RELEVANT SURFACE — dispatch + args + implementation — NOT a whole-file blob-SHA; see the
+# block above the surface check for why the old whole-file freeze was wrong by design). The
+# counter-proof that the scope=pin detection MEANS
+# something (a preflight predating pin scope → the honest PREDATES caveat) already lives in §2b.
+if ! git -C "$REPO" rev-parse -q --verify "core-v0.6^{commit}" >/dev/null 2>&1; then
+  bad "cross-version: tag core-v0.6 not present in $REPO — cannot run the lane"
+else
+  XVENG="$(mk)"
+  git -C "$REPO" archive core-v0.6 scripts | tar -x -C "$XVENG"
+  chk "the extracted v0.6 front door carries the frozen-contract grep (the scope=pin detector, kickoff:1034)" \
+    "grep -q \"grep -q 'scope=pin'\" \"$XVENG/scripts/kickoff\""
+  read -r XVCLONE XVAD XVSNAP <<< "$(build_pull_case "$CORE")"
+  XVRC=0
+  XVOUT="$(KICKOFF_ADOPTERS_REGISTRY="$(mk)/r.json" REPO_DIR="$XVAD" timeout 120 bash "$XVENG/scripts/kickoff" pull core-vB 2>&1)" || XVRC=$?
+  XVCOMMIT_B="$(git -C "$CORE" rev-parse 'core-vB^{commit}')"
+  chk "v0.6 cmd_pull → v0.7 tools: the pull exits 0" "[ $XVRC -eq 0 ]"
+  chk "… with the anchored 'PULL OK' verdict line" \
+    "printf '%s' \"\$XVOUT\" | grep -Eq '^\[kickoff [^]]*\] PULL OK'"
+  chk "… and zero '[kickoff] ERROR:' lines" \
+    "! printf '%s' \"\$XVOUT\" | grep -q '^\[kickoff\] ERROR:'"
+  chk "… lock ADVANCED to the fixture target (format 2 · tag core-vB · the tag's commit)" \
+    "grep -q '^format 2' \"$XVAD/.kickoff/core.lock\" && grep -q '^tag core-vB$' \"$XVAD/.kickoff/core.lock\" && grep -q \"^commit $XVCOMMIT_B$\" \"$XVAD/.kickoff/core.lock\""
+  chk "… pin scope DETECTED as supported — 'PIN verified', never the 'PREDATES pin scope' mislabel" \
+    "printf '%s' \"\$XVOUT\" | grep -q 'PIN verified' && ! printf '%s' \"\$XVOUT\" | grep -q 'PREDATES pin scope'"
+  chk "… seam-sync clean: KICKOFF.md regenerated to vB by the NEW (work_dir) adopt-manifest.py" \
+    "grep -q 'CHARTER_MARKER_VB' \"$XVAD/.kickoff/KICKOFF.md\""
+  chk "… KICKOFF.local.md (the adopter's own half) byte-identical across the cross-version pull" \
+    "cmp -s \"$XVAD/.kickoff/KICKOFF.local.md\" \"$XVSNAP/KICKOFF.local.md\""
+  chk "… the adopter-owned layer byte-identical (CLAUDE.md + source + settings.local.json)" \
+    "cmp -s \"$XVAD/CLAUDE.md\" \"$XVSNAP/CLAUDE.md\" && cmp -s \"$XVAD/src/app.txt\" \"$XVSNAP/app.txt\" && cmp -s \"$XVAD/.claude/settings.local.json\" \"$XVSNAP/settings.local.json\""
+  # ── the frozen contracts, asserted directly (so a future G-slice that breaks one fails HERE) ──
+  chk "FROZEN CONTRACT: the v0.7 working-tree preflight.sh still carries the literal scope=pin token" \
+    "grep -q 'scope=pin' \"$REPO/scripts/preflight.sh\""
+  XVPFRC=0
+  XVPFOUT="$(REPO_DIR="$XVAD" KICKOFF_CORE_DIR="$XVCLONE" timeout 60 bash "$XVCLONE/scripts/preflight.sh" --pin 2>&1)" || XVPFRC=$?
+  chk "FROZEN CONTRACT: v0.7 preflight.sh still ACCEPTS --pin (rc=0, the pin-scope banner printed)" \
+    "[ $XVPFRC -eq 0 ] && printf '%s' \"\$XVPFOUT\" | grep -q 'scope=pin'"
+  # ── the adopt-manifest.py frozen contract: the PULL-RELEVANT SURFACE, not the whole file ──────
+  # (v0.9 G1 slice 5.) This assertion used to be a WHOLE-FILE blob-SHA freeze ("adopt-manifest.py is
+  # byte-identical to core-v0.6's copy"). That premise — the tool never changes across versions — is
+  # wrong BY DESIGN: v0.9 slice 2 ADDED `gen-upgrade-turnkey` (a new handler + its subparser; no
+  # existing verb touched), which is SAFE for a cross-version pull yet tripped the whole-file freeze.
+  # The invariant the check was really protecting is narrower: a v0.6 adopter's `kickoff pull <newer>`
+  # runs their OLD cmd_pull against the NEW tag's adopt-manifest.py, so THE SURFACE THAT OLD cmd_pull
+  # INVOKES must not move under it. The rest of the file is free to grow.
+  #
+  # The pull-relevant verbs, read straight out of core-v0.6's kickoff (the ones called on the
+  # work_dir/pinned-tag tool — i.e. the NEW code) — SIX, exhaustively:
+  #     sync-seams               kickoff@core-v0.6:821,827   ($work_dir/scripts/adopt-manifest.py)
+  #     plugin-list              kickoff@core-v0.6:869,872   (same work_dir tool → $plugin_tool)
+  #     rehash-path              kickoff@core-v0.6:941       (same $plugin_tool, on the NORMAL
+  #                                                           "settings.json was CLEAN" branch)
+  #     plugin-record            kickoff@core-v0.6:449       ┐ via _resync_plugin_cache,
+  #     plugin-cache-verify      kickoff@core-v0.6:464,520   ├ tool="$core_wd/scripts/adopt-manifest.py"
+  #     plugin-consumers-others  kickoff@core-v0.6:499       ┘ (core_wd = the pinned work dir)
+  # (`adopters-siblings` / `adopters-register` are invoked through $HERE — the adopter's OWN pinned
+  # engine, i.e. the OLD copy — so they are NOT part of the new-tool surface and are not frozen here.)
+  # rehash-path is NOT optional decoration: if it breaks under the pinned cmd_pull, kickoff:941 only
+  # WARNS (the pull still says OK) while sha256_at_write is never re-recorded — so a later `eject`
+  # reads kickoff's OWN write as operator-edited, SKIPS the byte-restore, and strands the plugin keys
+  # in the adopter's repo permanently. Silent, deferred, unrecoverable: it must fail HERE.
+  #
+  # Three layers, all must hold — and all must be able to go RED:
+  #   (a) INTERFACE — each pull-relevant verb's argparse surface (`<verb> --help`) byte-identical to
+  #       v0.6's, so a dropped/renamed flag the old cmd_pull passes fails HERE, not in a live pull.
+  #   (b) DISPATCH — the verb→handler mapping (`sub.add_parser("verb")` … `.set_defaults(func=H)`),
+  #       read statically out of the parser. Without this, repointing a verb at a gutted no-op twin
+  #       while leaving the old handler byte-identical sails through (a) and (c) untouched.
+  #   (c) BEHAVIOUR — the IMPLEMENTATION reachable from the handlers layer (b) RESOLVES (transitive
+  #       closure over module-level defs + constants, via AST) byte-identical to v0.6's. A NEW verb
+  #       doesn't touch it; editing sync-seams — or any helper/template-constant it reaches — trips it.
+  # (b)+(c) share one digest — the mapping is hashed alongside the closure, and the closure is rooted
+  # in the RESOLVED handlers, not in hardcoded cmd_* names. Deliberately NOT "bump the baseline to the
+  # current tag": that re-breaks on the next additive change and teaches the next session to
+  # rubber-stamp the freeze away.
+  # Known, accepted limits (backstopped elsewhere in this suite, and cheaper than the alternatives):
+  #   · (a) freezes help TEXT, not arg SEMANTICS — flipping store_true→store_false on a flag v0.6
+  #     passes renders identical help. §3 (which invokes --force-regenerate for real) catches it.
+  #   · (c) hashes raw source spans, so a comment/whitespace edit inside a closure member reds. That
+  #     strictness is deliberate: the invoked surface should require a re-bless.
+  #   · The closure follows ast.Name references; a helper reached ONLY via getattr indirection would
+  #     be missed (adopt-manifest.py has none today).
+  XVAM="$(mk)"
+  git -C "$REPO" show core-v0.6:scripts/adopt-manifest.py > "$XVAM/adopt-manifest.py"
+  cat > "$XVAM/pull-surface.py" <<'PULLSURFACE'
+# Digest of adopt-manifest.py's PULL-RELEVANT surface: the SIX verbs a v0.6 cmd_pull invokes on the
+# newly-pinned tag's tool, the DISPATCH that decides which function each verb actually runs, and every
+# module-level def/constant transitively reachable from those handlers. Additive verbs (new handler +
+# new subparser) do not move this digest; touching a pull-relevant verb's dispatch, implementation, or
+# anything it reaches, does.
+import ast, hashlib, sys
+VERBS = ["sync-seams", "plugin-list", "plugin-record", "plugin-cache-verify",
+         "plugin-consumers-others", "rehash-path"]
+src = open(sys.argv[1], "rb").read().decode()
+tree = ast.parse(src)
+defs, consts = {}, {}
+for n in tree.body:
+    if isinstance(n, (ast.FunctionDef, ast.ClassDef)):
+        defs[n.name] = n
+    elif isinstance(n, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+        tgts = n.targets if isinstance(n, ast.Assign) else [n.target]
+        for t in tgts:
+            if isinstance(t, ast.Name):
+                consts[t.id] = n
+# ── layer (b): the DISPATCH map, read out of the parser —
+#      `v = sub.add_parser("verb", …)`  …  `v.set_defaults(func=HANDLER)`
+# Rooting the closure in the RESOLVED handler (not a hardcoded cmd_* name) is what makes a repointed
+# set_defaults — the verb gutted to a no-op twin, the old handler left byte-identical — fail red.
+var_verb, dispatch = {}, {}
+for node in ast.walk(tree):
+    if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call) \
+       and isinstance(node.value.func, ast.Attribute) and node.value.func.attr == "add_parser" \
+       and node.value.args and isinstance(node.value.args[0], ast.Constant) \
+       and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+        var_verb[node.targets[0].id] = node.value.args[0].value
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) \
+       and node.func.attr == "set_defaults" and isinstance(node.func.value, ast.Name):
+        verb = var_verb.get(node.func.value.id)
+        for kw in node.keywords:
+            if kw.arg == "func" and isinstance(kw.value, ast.Name) and verb:
+                dispatch[verb] = kw.value.id
+unmapped = [v for v in VERBS if v not in dispatch]        # verb DELETED / dispatch unreadable
+missing = [dispatch[v] for v in VERBS if v in dispatch and dispatch[v] not in defs]
+if unmapped or missing:                                   # → hard red, never a vacuous green
+    sys.stderr.write("UNRESOLVABLE pull-relevant verb(s): %s  |  MISSING handler(s): %s\n"
+                     % (",".join(unmapped) or "-", ",".join(missing) or "-"))
+    sys.exit(3)
+ENTRY = sorted({dispatch[v] for v in VERBS})
+seen, stack = set(), list(ENTRY)
+while stack:
+    name = stack.pop()
+    if name in seen:
+        continue
+    seen.add(name)
+    node = defs.get(name) or consts.get(name)
+    if node is None:
+        continue
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Name) and (sub.id in defs or sub.id in consts) and sub.id not in seen:
+            stack.append(sub.id)
+h = hashlib.sha256()
+for v in VERBS:                                           # layer (b): the dispatch itself is frozen
+    h.update(("dispatch:%s=%s" % (v, dispatch[v])).encode()); h.update(b"\0")
+for name in sorted(seen):                                 # layer (c): the implementation closure
+    node = defs.get(name) or consts.get(name)
+    if node is None:
+        continue
+    h.update(name.encode()); h.update(b"\0")
+    h.update(ast.get_source_segment(src, node).encode()); h.update(b"\0")
+if len(sys.argv) > 2 and sys.argv[2] == "--list":
+    for v in VERBS:
+        print("dispatch %-24s -> %s" % (v, dispatch[v]))
+    for name in sorted(seen):
+        print("closure  %s" % name)
+else:
+    print(h.hexdigest())
+PULLSURFACE
+  XVSURF_OLD="$(python3 "$XVAM/pull-surface.py" "$XVAM/adopt-manifest.py" 2>/dev/null || true)"
+  XVSURF_NEW="$(python3 "$XVAM/pull-surface.py" "$REPO/scripts/adopt-manifest.py" 2>/dev/null || true)"
+  # ── RE-BLESS LEDGER — accepted, reviewed deltas to the v0.6 pull surface ──────────────────────
+  # The surface stays byte-identical to core-v0.6 EXCEPT the explicitly-listed, justified deltas
+  # below. This is an allow-list-with-reasons (the .scanignore discipline), NOT "bump the baseline to
+  # the current tag": a digest that is NEITHER v0.6's NOR a blessed value still REDs, so the guard
+  # keeps catching unintended drift. A NEW blessed entry is only ever added after a real cross-version
+  # safety review (why is regenerating an OLD adopter's seams with this change safe?).
+  #   c7cd1eda…  core-v0.19 · commit 7a48862 (shim env-seal, scout #2): SHIM_TEMPLATES now `unset`s the
+  #     ambient MC_/MEMORY_/GIT_ data-path vars before sourcing instance.env. SAFE to pull forward —
+  #     the regenerated shim resolves via the adopter's own instance.env (which sets MC_STATE_FILE to a
+  #     repo-relative path); for a config that LACKS that line the behaviour is unchanged (the var was
+  #     already unresolved, only ever "saved" by the ambient bleed this fix closes), so it never breaks
+  #     a working adopter. Only SHIM_TEMPLATES' body moved — no member added/removed, arg-surface green.
+  #   9fbe910d…  core-v0.24 (workspace gate arming): the two SCAN shims no longer `cd "$REPO_DIR"`
+  #     unconditionally. When — and ONLY when — the adopted root is NOT itself a git repo (a workspace
+  #     of sibling checkouts) and the caller stands in a work tree strictly inside it, they cd to the
+  #     CALLER's repo instead. Needed because a workspace member's git hook calls the ROOT's shim, and
+  #     cd-ing to the root fans the scan across every sibling and scores that member's commit on its
+  #     neighbours' staged files.
+  #     SAFE to pull forward: for a single-repo adopter — i.e. EVERY adopter that exists before this
+  #     tag — `git -C "$REPO_DIR" rev-parse --show-toplevel` equals REPO_DIR, so the whole new block is
+  #     skipped and the `cd` is the original one, byte-for-byte, on every path (hook, manual run, run
+  #     from a subdir, run from a nested checkout). The branch is likewise unreachable with no `git` on
+  #     PATH (`|| true` → empty → the guard's inequality holds but the caller-top probe is empty too →
+  #     fallback cd) and for a caller in an unrelated repo (no prefix match). It therefore cannot turn
+  #     a blocking gate into a passing one for any existing adopter. Only SHIM_TEMPLATES' body moved —
+  #     the extractor reports ZERO surface-member drift, arg-surface green.
+  #   3b29ca9e…  core-v0.25 (a workspace root may BE a git repo): the same two SCAN shims gain a
+  #     SECOND spelling of "this is a workspace root" — `|| [ -f "$_root_p/.kickoff/workspace" ]` —
+  #     because workspace-ness is no longer inferred from "the root is not a git repo". Needed
+  #     because with a MARKED git root the old inference is FALSE, so the member-scoping branch went
+  #     dead and a member's pre-commit cd'd to the ROOT and scored its commit on the ROOT's index:
+  #     a silent false green on every member commit (reproduced RED in workspace-adopt-selftest §10,
+  #     "member scoping under a GIT root").
+  #     SAFE to pull forward, and the v0.24 argument holds unchanged plus one clause: an EXISTING
+  #     adopter has no `.kickoff/workspace` file — nothing before this tag ever wrote one — so the
+  #     added disjunct is FALSE, the guard's value is exactly what it was, and the `cd` is
+  #     byte-for-byte the old one on every path (hook, manual run, from a subdir, from a nested
+  #     checkout, with no `git` on PATH). It can only ever NARROW a scan from the whole workspace to
+  #     the caller's own repo, and only in a topology that must be opted into by writing the marker,
+  #     so it cannot turn a blocking gate into a passing one for any repo that exists today. Only
+  #     SHIM_TEMPLATES' bodies moved — the extractor reports ZERO surface-member drift, arg-surface
+  #     green. (The superseded v0.24 digest 9fbe910d… stays documented above: this delta is layered
+  #     on top of it, not a replacement of its reasoning.)
+  #   0b0261d9…  core-v0.30 (the CLI's bookkeeping is not adopter drift): `_fileset_manifest` gains
+  #     an `ignore_top` parameter — DEFAULTING TO AN EMPTY frozenset, so every existing caller is
+  #     byte-equivalent — a top-level-only skip inside its walk, one new module constant
+  #     `_CACHE_VENDOR_BOOKKEEPING = frozenset({".orphaned_at"})`, and ONE call site passing it: the
+  #     CACHE side of plugin-cache-verify. The CORE side passes nothing and is still hashed with no
+  #     exclusions at all. The extractor reports ONE added closure member (the constant) and ZERO
+  #     removed; no verb, no dispatch and no arg-surface changed.
+  #     WHY: the vendor CLI stamps `.orphaned_at` (a millisecond epoch) into a cached plugin version
+  #     dir once no USER-scope marketplace references it, and kickoff registers its marketplace
+  #     PER-ADOPTER at project scope — so on such a box that stamp is routine housekeeping. #8 read
+  #     it as DRIFT, and #8 is fail-closed on supervisor start AND on every engine hop. Measured
+  #     2026-08-12: SIX of the seven orgs on this machine in a hard preflight failure at once, each
+  #     one restart from not booting a session, and a v0.30 rotation would have fail-closed on all
+  #     six. (The seventh — kickoff-itself, no interactive plugin entry — SKIPS #8 and looked fine.)
+  #     THIS IS THE FIRST BLESSED DELTA WHOSE EFFECT IS TO TURN A RED GREEN, so it is stated rather
+  #     than buried: yes, a gate that was refusing now passes. It is correct because the red was
+  #     FALSE, and the exemption is bounded on three axes, each with its own lane in
+  #     plugin-selftest §9: a real extra file in the cache still FAILS; the same filename on the
+  #     CORE side still FAILS; the same filename ONE DIRECTORY DOWN still FAILS. Nothing else about
+  #     the check moved — the version dir is still located by the PINNED version, and every other
+  #     file is still byte-compared — so it cannot mask a stale or substituted cache. For an adopter
+  #     with no `.orphaned_at` (i.e. any box whose CLI has not orphaned that version) the compared
+  #     set is unchanged and the verdict is identical to before.
+  #   05085ef8…  core-v0.33 candidate · commits 141dca7 (output-style seam) + the sync-seams
+  #     atomicity fix blessed together, reviewed as one delta over the blessed 0b0261d9 state.
+  #     WHAT MOVED (extractor-verified vs the v0.32/0b0261d9 surface): THREE added closure members
+  #     (_OUTPUT_STYLE_PATH, _OUTPUT_STYLE_SRC, _read_core_root_file) + _CORE_ROOT newly REACHABLE
+  #     (pre-existing constant, body unchanged — it entered the closure via _OUTPUT_STYLE_SRC);
+  #     THREE bodies changed: seam_template_for (one added branch — `norm == _OUTPUT_STYLE_PATH` →
+  #     read the style template from the CORE ROOT, the _AGENT_CHARTER_TEMPLATE idiom),
+  #     cmd_sync_seams (templates now ALL resolved BEFORE any seam is written), and
+  #     cmd_rehash_path (DOCSTRING + die-message TEXT only — zero logic, the allowlist and
+  #     arg-surface are byte-identical). ZERO members removed, ZERO dispatch changes.
+  #     WHY REGENERATING AN OLD ADOPTER'S SEAMS WITH THIS IS SAFE:
+  #     · An adopter WITHOUT a recorded .claude/output-styles/plain-report.md entry — i.e. EVERY
+  #       adopter that exists before this tag — walks byte-identically: sync-seams only visits
+  #       manifest-listed paths, none equals _OUTPUT_STYLE_PATH, so the new branch never fires.
+  #     · An adopter WITH the entry pulling an OLDER tag runs that tag's OWN adopt-manifest.py
+  #       (kickoff step 4b uses $work_dir's tool), whose seam_template_for returns None for the
+  #       path → "[ skip ]", file untouched. No FATAL in either direction.
+  #     · The new FATAL (_read_core_root_file on a missing style file) is reachable ONLY from an
+  #       INCOMPLETE checkout of a tag ≥ this one: every real tag ships the file
+  #       (scripts/core-manifest.txt lists it — the existence contract pull step 4a checks BEFORE
+  #       sync-seams ever runs). It is the same broken-core backstop _read_file_seam_template has
+  #       always had, not a new refusal on any coherent core.
+  #     · The cmd_sync_seams hoist can only NARROW the blast radius of that FATAL: pre-hoist a
+  #       mid-walk template failure left earlier seams regenerated with save_manifest unreached
+  #       (adopter stranded at file != recorded hash — preflight #8 red, eject mis-reads kickoff's
+  #       own write as a hand-edit); post-hoist the same failure aborts with ZERO seams written and
+  #       the manifest intact. Proved RED on the pre-fix tool / GREEN on this one with the same
+  #       broken-core fixture. On a complete core the resolved set and every write are identical.
+  #   00e15b9d…  core-v0.42 candidate · commits 82b830f→61f7034 (the opencode engine-parity set:
+  #     gen-opencode + its wiring), reviewed as one delta over the blessed 05085ef8 state —
+  #     co-reviewed twice (coordinator inline + lane F independently, identical verdict/digest).
+  #     WHAT MOVED (extractor-verified vs core-v0.33/05085ef8 — membership AND bodies, both
+  #     trees diffed): SEVEN added closure members, all inert data or pure defs — _MODEL_PIN_LINE_RE
+  #     (compiled regex), _OPENCODE_AGENTS/_OPENCODE_PLUGINS (tuples), _OPENCODE_AGENT_DIR/
+  #     _OPENCODE_PLUGIN_DIR (os.path joins off the already-blessed _CORE_ROOT), _strip_model_pin
+  #     (regex sub), _opencode_agent_template (core-root read + pin strip, die()s only on an
+  #     unknown name) + TWO pure INSERTIONS in existing members — FILE_SEAM_TEMPLATES gains the
+  #     opencode entries; seam_template_for gains the .opencode/agent|plugins resolution branches
+  #     (its second `"/" not in name` pair is UNREACHABLE belt-and-braces — fully shadowed by the
+  #     first pair; dead code cannot change behaviour, noted rather than hidden). ZERO members
+  #     removed/altered, ZERO dispatch changes, arg-surface byte-identical (this suite's own
+  #     check). gen-opencode itself is an ADDITIVE verb (free by the freeze's design).
+  #     WHY REGENERATING AN OLD ADOPTER'S SEAMS WITH THIS IS SAFE:
+  #     · Every pull-relevant walk is MANIFEST-driven: sync-seams resolves templates only for
+  #       paths listed in the adopter's own manifest, and a pre-v0.42 manifest cannot contain
+  #       .opencode/** rows or an opencode.json row (gen-opencode did not exist before this
+  #       tag) — the new branches and entries are UNREACHABLE for every adopter that exists
+  #       today; the fall-through for all old paths is byte-identical (pure insertions).
+  #     · FILE_SEAM_TEMPLATES is consumed by KEYED lookups only inside the pull closure; the
+  #       one iterating consumer (`known = … + sorted(FILE_SEAM_TEMPLATES)`) sits in
+  #       cmd_reconcile — NOT one of the 6 pull verbs.
+  #     · An adopter WITH recorded opencode seams (possible only after a core ≥ this tag
+  #       delivered them — adopt's gate is pin-rooted, lane D) pulling THIS tag resolves
+  #       templates from the PINNED checkout's core-root — the _read_core_root_file idiom
+  #       blessed at 05085ef8; its FATAL is reachable only from an INCOMPLETE checkout, and
+  #       every template read is listed in scripts/core-manifest.txt — the existence contract
+  #       pull step 4a checks BEFORE sync-seams ever runs (the same broken-core backstop the
+  #       style file has).
+  #     · _strip_model_pin is a pure text transform on DELIVERED charter bytes (drops YAML
+  #       `model:` lines — a pin silently wedges sessions on boxes without that provider);
+  #       no v0.6-era seam path is a charter, so no pre-existing template byte changes.
+  XV_BLESSED="00e15b9d511444b106dddbf0b4f4128f0845b2f1255a70e5b77334e48c570049"
+  chk "FROZEN CONTRACT: adopt-manifest.py's PULL-RELEVANT dispatch+implementation surface (the 6 verbs a v0.6 cmd_pull invokes, the handler each one DISPATCHES to, + everything they reach) is byte-identical to core-v0.6's OR a blessed reviewed delta — additive verbs are FREE" \
+    "[ -n \"$XVSURF_OLD\" ] && [ -n \"$XVSURF_NEW\" ] && { [ \"$XVSURF_OLD\" = \"$XVSURF_NEW\" ] || [ \"$XVSURF_NEW\" = \"$XV_BLESSED\" ]; }"
+  if [ "$XVSURF_OLD" != "$XVSURF_NEW" ]; then
+    printf '  ── pull-surface digest drift: core-v0.6=%s  working-tree=%s\n' \
+      "${XVSURF_OLD:-<extractor-failed>}" "${XVSURF_NEW:-<extractor-failed>}"
+    # the members that moved, named — both trees are still on disk HERE (the EXIT trap reaps $XVAM
+    # only at the end of the run), so print the real diff instead of an un-runnable hint
+    python3 "$XVAM/pull-surface.py" "$XVAM/adopt-manifest.py" --list > "$XVAM/old.list" 2>/dev/null || true
+    python3 "$XVAM/pull-surface.py" "$REPO/scripts/adopt-manifest.py" --list > "$XVAM/new.list" 2>/dev/null || true
+    diff "$XVAM/old.list" "$XVAM/new.list" | sed 's/^/  ── surface-member drift: /' || true
+  fi
+  XVIF_DRIFT=""
+  for _xvv in sync-seams plugin-list plugin-record plugin-cache-verify plugin-consumers-others rehash-path; do
+    _xva="$(COLUMNS=100 python3 "$XVAM/adopt-manifest.py" "$_xvv" --help 2>&1 || true)"
+    _xvb="$(COLUMNS=100 python3 "$REPO/scripts/adopt-manifest.py" "$_xvv" --help 2>&1 || true)"
+    [ "$_xva" = "$_xvb" ] && [ -n "$_xva" ] || XVIF_DRIFT="$XVIF_DRIFT $_xvv"
+  done
+  chk "FROZEN CONTRACT: the ARG-SURFACE of each pull-relevant verb (\`<verb> --help\`) is byte-identical to core-v0.6's — a dropped/renamed flag the pinned cmd_pull passes fails HERE" \
+    "[ -z \"$XVIF_DRIFT\" ]"
+  [ -n "$XVIF_DRIFT" ] && printf '  ── verbs whose arg-surface drifted from core-v0.6:%s\n' "$XVIF_DRIFT"
+  true
+fi
+echo
+
+# ══════════════════════════════════════════════════════════════════════════════════════
+echo "9b. Fix C for PULL — a pull run from INSIDE another worker's session stamps the ADOPTER's channel, never the CALLER's"
+# ══════════════════════════════════════════════════════════════════════════════════════
+# THE INCIDENT (live, 2026-08-07: one fleet sweep poisoned three orgs' rows). cmd_pull's step-4d
+# adopters-register used to pass the AMBIENT `${TELEGRAM_STATE_DIR:-}` as --channel, on the premise
+# that the ambient value is "whitelist-loaded from THIS adopter's instance.env". It is NOT — not
+# whenever the CALLER already has one set: load_instance_env deliberately SKIPS every pre-set name
+# (`# pre-set / argv wins`, kickoff:272), so a `kickoff pull` for repo B run from INSIDE repo A's
+# worker session (the fleet-upgrade sweep) keeps A's channel and stamps it onto B's row.
+# The damage runs BOTH ways, and both land on a CONSUMER — this is not cosmetic bookkeeping:
+# preflight #2 (adopters-channel-clash) then reports a PHANTOM clash against A, blocking A's own
+# engine hop; and a row naming the wrong channel can no longer detect the REAL double-poller that
+# check exists for.
+# The fix is the isolation cmd_adopt has had since core-v0.3.1 ("Fix C", kickoff:2831, proved by
+# adopt-selftest §12) and pull never got: read the channel from THIS repo's instance.env in a
+# subshell with TELEGRAM_STATE_DIR + REPO_DIR unset. Every lane below drives the REAL `kickoff pull`
+# (never a re-implementation of the idiom) and asserts the ROW the system consumes — plus the
+# consumer verb itself.
+ch_row() {   # $1=registry $2=adopter repo $3=field → that field of THIS repo's row ('' when no row)
+  python3 -c '
+import json, os, sys
+try:
+    rows = json.load(open(sys.argv[1]))["adopters"]
+except Exception:
+    sys.exit(0)
+for a in rows:
+    p = a.get("repo") or ""                       # blank/missing repo ⇒ never realpath("") (→ CWD)
+    if p and os.path.realpath(p) == os.path.realpath(sys.argv[2]):
+        print(a.get(sys.argv[3], "") or ""); break' "$1" "$2" "$3"
+}
+ch_canon() { python3 -c 'import os,sys;print(os.path.realpath(sys.argv[1]))' "$1"; }
+
+# ── CASE A [RED pre-fix — THE INCIDENT] ── the adopter's instance.env names its OWN channel; the
+# CALLER's session exports a DIFFERENT one. The registered row must carry the ADOPTER's. The caller
+# (org A) is itself a registered adopter here, so the clash consumer has the live two-row topology.
+read -r _CH1CLONE CH1AD _CH1SNAP <<< "$(build_pull_case "$CORE")"
+CH1REG="$(mk)/adopters.json"; CH1CALLER="$(mk)"; CH1CALLER_CHAN="$(mk)/caller-chan"; mkdir -p "$CH1CALLER_CHAN"
+CH1AD_CHAN="$(ch_canon "$CH1AD/.kickoff/chan")"     # what build_pull_case wrote into the adopter's instance.env
+python3 "$AM" adopters-register --repo "$CH1CALLER" --tag core-vA --version-dir "$CH1CALLER" \
+  --channel "$CH1CALLER_CHAN" --registry "$CH1REG" >/dev/null
+CH1RC=0
+CH1OUT="$(KICKOFF_VERSIONS_DIR="$(mk)/vers" KICKOFF_ADOPTERS_REGISTRY="$CH1REG" REPO_DIR="$CH1AD" TELEGRAM_STATE_DIR="$CH1CALLER_CHAN" \
+  bash "$KICKOFF" pull core-vB 2>&1)" || CH1RC=$?
+CH1ROW_CHAN="$(ch_row "$CH1REG" "$CH1AD" channel)"
+CH1CLASH="$(python3 "$AM" adopters-channel-clash --repo "$CH1CALLER" --channel "$CH1CALLER_CHAN" --registry "$CH1REG" 2>/dev/null || true)"
+chk "caller-session pull: PULL OK (rc=0) — the lane really ran a whole pull, so the row below is a real register" \
+  "[ $CH1RC -eq 0 ] && printf '%s' \"\$CH1OUT\" | grep -q 'PULL OK'"
+chk "caller-session pull [RED pre-fix]: the row carries the ADOPTER's OWN channel (its instance.env value)" \
+  "[ \"$CH1ROW_CHAN\" = \"$CH1AD_CHAN\" ]"
+chk "caller-session pull [RED pre-fix]: the CALLER's channel was NOT stamped onto the adopter's row" \
+  "[ \"$CH1ROW_CHAN\" != \"\$(ch_canon \"$CH1CALLER_CHAN\")\" ]"
+chk "caller-session pull [RED pre-fix]: the CONSUMER agrees — adopters-channel-clash (preflight #2) reports NO phantom clash for the caller" \
+  "[ -z \"$CH1CLASH\" ]"
+[ "$CH1ROW_CHAN" = "$CH1AD_CHAN" ] || printf '  ── row channel: %s\n  ── expected the ADOPTER'\''s: %s\n  ── the CALLER'\''s was:      %s\n' \
+  "${CH1ROW_CHAN:-<no row/channel>}" "$CH1AD_CHAN" "$(ch_canon "$CH1CALLER_CHAN")"
+
+# ── CASE B [RED pre-fix — the SHARPEST form] ── the adopter ships the SELF-DEFAULTING
+# `export TELEGRAM_STATE_DIR="${TELEGRAM_STATE_DIR:-…}"` line real adopters carry (the shape
+# instance.env.example seeds). That form keeps an ambient value even on a PLAIN `source`, so it is what makes the `unset
+# TELEGRAM_STATE_DIR` INSIDE the fix's subshell load-bearing rather than decoration — a "fix" that
+# only sub-shelled the source would still stamp the caller's channel here.
+read -r _CH2CLONE CH2AD _CH2SNAP <<< "$(build_pull_case "$CORE")"
+CH2REG="$(mk)/adopters.json"; CH2CALLER_CHAN="$(mk)/caller-chan"; mkdir -p "$CH2CALLER_CHAN"
+CH2CHAN="$CH2AD/.kickoff/telegram-fixture"
+sed -i "s|^export TELEGRAM_STATE_DIR=.*|export TELEGRAM_STATE_DIR=\"\${TELEGRAM_STATE_DIR:-$CH2CHAN}\"|" \
+  "$CH2AD/.kickoff/instance.env"
+chk "CASE B fixture: the adopter's instance.env really uses the self-defaulting \${TELEGRAM_STATE_DIR:-…} form" \
+  "grep -q 'export TELEGRAM_STATE_DIR=\"\${TELEGRAM_STATE_DIR:-' \"$CH2AD/.kickoff/instance.env\""
+# the fixture's SHARPNESS, asserted (a negative control): under the caller's ambient value a NAIVE
+# source yields the CALLER's channel — the `:-` default never fires. Run in a command-substitution
+# subshell so the export can never reach THIS suite's environment.
+CH2NAIVE="$(export TELEGRAM_STATE_DIR="$CH2CALLER_CHAN"; set +u; . "$CH2AD/.kickoff/instance.env" >/dev/null 2>&1 || true; printf '%s' "${TELEGRAM_STATE_DIR:-}")"
+chk "CASE B fixture is SHARP: a NAIVE source under the ambient value keeps the CALLER's channel (only an \`unset\` beats the :- default)" \
+  "[ \"$CH2NAIVE\" = \"$CH2CALLER_CHAN\" ]"
+CH2RC=0
+CH2OUT="$(KICKOFF_VERSIONS_DIR="$(mk)/vers" KICKOFF_ADOPTERS_REGISTRY="$CH2REG" REPO_DIR="$CH2AD" TELEGRAM_STATE_DIR="$CH2CALLER_CHAN" \
+  bash "$KICKOFF" pull core-vB 2>&1)" || CH2RC=$?
+CH2ROW_CHAN="$(ch_row "$CH2REG" "$CH2AD" channel)"
+chk "self-defaulting form: PULL OK (rc=0)" \
+  "[ $CH2RC -eq 0 ] && printf '%s' \"\$CH2OUT\" | grep -q 'PULL OK'"
+chk "self-defaulting form [RED pre-fix]: the row carries the adopter's OWN :- DEFAULT, not the caller's ambient value" \
+  "[ \"$CH2ROW_CHAN\" = \"\$(ch_canon \"$CH2CHAN\")\" ]"
+chk "self-defaulting form [RED pre-fix]: the caller's channel is ABSENT from the ENTIRE registry" \
+  "! grep -qF \"\$(ch_canon \"$CH2CALLER_CHAN\")\" \"$CH2REG\""
+[ "$CH2ROW_CHAN" = "$(ch_canon "$CH2CHAN")" ] || printf '  ── row channel: %s\n  ── expected the adopter'\''s :- default: %s\n  ── the CALLER'\''s was:                %s\n' \
+  "${CH2ROW_CHAN:-<no row/channel>}" "$(ch_canon "$CH2CHAN")" "$(ch_canon "$CH2CALLER_CHAN")"
+
+# ── CASE C — the MERGE semantic must NOT be weakened ── an adopter whose instance.env sets NO
+# channel resolves to EMPTY, and adopters-register's `empty ⇒ MERGE` must PRESERVE whatever the row
+# already holds (a channel the operator wired later, or an earlier register stored). Two regressions
+# fail HERE: the ambient leak (pre-fix the caller's channel OVERWROTE the stored one) and an
+# over-correction that always overwrites (an empty --channel would WIPE it). The tag assertion keeps
+# the merge one honest — a pull that silently skipped registration would otherwise pass vacuously.
+read -r _CH3CLONE CH3AD _CH3SNAP <<< "$(build_pull_case "$CORE")"
+CH3REG="$(mk)/adopters.json"; CH3CALLER_CHAN="$(mk)/caller-chan"; CH3STORED="$(mk)/stored-chan"
+mkdir -p "$CH3CALLER_CHAN" "$CH3STORED"
+sed -i '/^export TELEGRAM_STATE_DIR=/d' "$CH3AD/.kickoff/instance.env"
+chk "CASE C fixture: the adopter's instance.env sets NO channel at all" \
+  "! grep -q 'TELEGRAM_STATE_DIR' \"$CH3AD/.kickoff/instance.env\""
+python3 "$AM" adopters-register --repo "$CH3AD" --tag core-vA --version-dir "$CH3AD" \
+  --channel "$CH3STORED" --registry "$CH3REG" >/dev/null
+CH3RC=0
+CH3OUT="$(KICKOFF_VERSIONS_DIR="$(mk)/vers" KICKOFF_ADOPTERS_REGISTRY="$CH3REG" REPO_DIR="$CH3AD" TELEGRAM_STATE_DIR="$CH3CALLER_CHAN" \
+  bash "$KICKOFF" pull core-vB 2>&1)" || CH3RC=$?
+CH3ROW_CHAN="$(ch_row "$CH3REG" "$CH3AD" channel)"
+CH3ROW_TAG="$(ch_row "$CH3REG" "$CH3AD" tag)"
+chk "no-channel adopter: PULL OK (rc=0)" \
+  "[ $CH3RC -eq 0 ] && printf '%s' \"\$CH3OUT\" | grep -q 'PULL OK'"
+chk "no-channel adopter: the register REALLY ran (the row's tag advanced to core-vB) — no vacuous merge pass" \
+  "[ \"$CH3ROW_TAG\" = core-vB ]"
+chk "no-channel adopter [RED pre-fix]: the PREVIOUSLY-STORED row channel SURVIVES the pull (empty ⇒ MERGE, never overwrite)" \
+  "[ \"$CH3ROW_CHAN\" = \"\$(ch_canon \"$CH3STORED\")\" ]"
+[ "$CH3ROW_CHAN" = "$(ch_canon "$CH3STORED")" ] || printf '  ── row channel: %s\n  ── expected the STORED one: %s\n  ── the CALLER'\''s was:      %s\n' \
+  "${CH3ROW_CHAN:-<no row/channel>}" "$(ch_canon "$CH3STORED")" "$(ch_canon "$CH3CALLER_CHAN")"
+
+# ── CASE D [RED under the OVER-CORRECTION] ── the adopter DERIVES its channel from its own repo
+# root, and the pull runs from ANOTHER directory (the fleet-sweep: standing in org A's checkout,
+# upgrading org B). Cases A–C all pin the channel to a LITERAL absolute path, so none of them can
+# see where a *derivation* resolves — that gap is why the first fix's regression was invisible.
+# The first fix read the channel as `(unset TELEGRAM_STATE_DIR REPO_DIR; . instance.env)`: no cwd
+# pin, no REPO_DIR. Against a derived config that resolves the CALLER's directory — the SAME
+# cross-wire the fix existed to close, and strictly WORSE than the original bug, because the wrong
+# value is NON-EMPTY, so adopters-register's `empty ⇒ MERGE` guard never engages and the row is
+# HARD-OVERWRITTEN. _channel_of_repo passes because it pins BOTH the cwd and REPO_DIR to the repo
+# being read — and BOTH pins are asserted here, in the two spellings that separate them:
+#   D1  `${REPO_DIR:-$PWD}/…`  — the anchor scripts/instance.env.example teaches for DERIVED paths
+#       (MEMORY_DIR :146, MC_STATE_FILE :184); its own channel line is `${TELEGRAM_STATE_DIR:-}`, so
+#       this models an adopter applying that idiom to their channel too. The `$PWD` fallback
+#       makes the CWD pin the load-bearing one: drop it and the value anchors on the caller's dir.
+#   D2  `$REPO_DIR/…`          — the same anchor without the fallback, so the REPO_DIR pin is the
+#       load-bearing one: drop it and (under `set +u`) the value anchors on `/`. D1 alone CANNOT
+#       see that — with the cwd pinned, `${REPO_DIR:-$PWD}` resolves identically whether REPO_DIR
+#       is exported or unset, so a lane carrying only D1 would leave half the fix untested.
+# ── D1: `${REPO_DIR:-$PWD}/.kickoff/chan` — the caller's channel is its own `<caller>/.kickoff/chan`
+# (the standard layout), so the over-correction reproduces THE INCIDENT exactly: org A's channel on
+# org B's row.
+read -r _CH4CLONE CH4AD _CH4SNAP <<< "$(build_pull_case "$CORE")"
+CH4REG="$(mk)/adopters.json"; CH4CALLER="$(mk)"; CH4CALLER_CHAN="$CH4CALLER/.kickoff/chan"
+mkdir -p "$CH4CALLER_CHAN"
+CH4AD_CHAN="$(ch_canon "$CH4AD/.kickoff/chan")"      # where the DERIVATION must land: the ADOPTER's own
+sed -i "s|^export TELEGRAM_STATE_DIR=.*|export TELEGRAM_STATE_DIR=\"\${TELEGRAM_STATE_DIR:-\${REPO_DIR:-\$PWD}/.kickoff/chan}\"|" \
+  "$CH4AD/.kickoff/instance.env"
+chk "CASE D fixture: the adopter's instance.env DERIVES its channel from \${REPO_DIR:-\$PWD} (the instance.env.example idiom), not a literal path" \
+  "grep -qF 'export TELEGRAM_STATE_DIR=\"\${TELEGRAM_STATE_DIR:-\${REPO_DIR:-\$PWD}/.kickoff/chan}\"' \"$CH4AD/.kickoff/instance.env\""
+# the fixture's SHARPNESS, asserted (a negative control, CASE B's shape): read this SAME file the way
+# the over-correction did — REPO_DIR unset, cwd left at the caller's — and it resolves the CALLER's
+# directory, not the adopter's. So the lane below constrains WHERE the derivation anchors, and can't
+# be passing for an unrelated reason. In a command-substitution subshell: the cd/unset never escape.
+CH4UNPINNED="$(cd "$CH4CALLER" 2>/dev/null || true; unset TELEGRAM_STATE_DIR REPO_DIR; set +u; . "$CH4AD/.kickoff/instance.env" >/dev/null 2>&1 || true; printf '%s' "${TELEGRAM_STATE_DIR:-}")"
+chk "CASE D fixture is SHARP: a read that UNSETS REPO_DIR (cwd unpinned) resolves the CALLER's directory — the over-correction, reproduced on this very file" \
+  "[ \"$CH4UNPINNED\" = \"$CH4CALLER_CHAN\" ] && [ \"$CH4UNPINNED\" != \"$CH4AD/.kickoff/chan\" ]"
+CH4RC=0
+CH4OUT="$(cd "$CH4CALLER" && KICKOFF_VERSIONS_DIR="$(mk)/vers" KICKOFF_ADOPTERS_REGISTRY="$CH4REG" REPO_DIR="$CH4AD" TELEGRAM_STATE_DIR="$CH4CALLER_CHAN" \
+  bash "$KICKOFF" pull core-vB 2>&1)" || CH4RC=$?
+CH4ROW_CHAN="$(ch_row "$CH4REG" "$CH4AD" channel)"
+CH4ROW_TAG="$(ch_row "$CH4REG" "$CH4AD" tag)"
+chk "REPO_DIR-derived channel: PULL OK (rc=0) — run from the CALLER's directory, so the row below is a real fleet-sweep register" \
+  "[ $CH4RC -eq 0 ] && printf '%s' \"\$CH4OUT\" | grep -q 'PULL OK'"
+chk "REPO_DIR-derived channel: the register REALLY ran (the row's tag advanced to core-vB) — no vacuous pass" \
+  "[ \"$CH4ROW_TAG\" = core-vB ]"
+chk "REPO_DIR-derived channel [RED under the over-correction]: the row carries the ADOPTER-anchored resolution (<adopter>/.kickoff/chan), never the caller-anchored one" \
+  "[ \"$CH4ROW_CHAN\" = \"$CH4AD_CHAN\" ]"
+chk "REPO_DIR-derived channel [RED under the over-correction]: the caller's CHANNEL is ABSENT from the ENTIRE registry" \
+  "[ -s \"$CH4REG\" ] && ! grep -qF \"\$(ch_canon \"$CH4CALLER_CHAN\")\" \"$CH4REG\""
+chk "REPO_DIR-derived channel [RED under the over-correction]: the caller's DIRECTORY appears NOWHERE in the registry (the \$PWD fallback never anchored a value)" \
+  "[ -s \"$CH4REG\" ] && ! grep -qF \"\$(ch_canon \"$CH4CALLER\")\" \"$CH4REG\""
+[ "$CH4ROW_CHAN" = "$CH4AD_CHAN" ] || printf '  ── row channel: %s\n  ── expected the ADOPTER-anchored: %s\n  ── the CALLER-anchored was:      %s\n' \
+  "${CH4ROW_CHAN:-<no row/channel>}" "$CH4AD_CHAN" "$(ch_canon "$CH4CALLER_CHAN")"
+
+# ── D2: the SAME derivation without the `$PWD` fallback — `$REPO_DIR/.kickoff/chan`. This is the
+# half only the REPO_DIR pin can hold: under `set +u` an unset REPO_DIR expands to EMPTY, so the row
+# gets the root-anchored `/.kickoff/chan` — non-empty garbage, which (per the MERGE guard) HARD-
+# OVERWRITES whatever channel the row already carried. The adopter's row is pre-registered with its
+# real channel so that overwrite is what the assertion actually observes.
+read -r _CH5CLONE CH5AD _CH5SNAP <<< "$(build_pull_case "$CORE")"
+CH5REG="$(mk)/adopters.json"; CH5CALLER="$(mk)"; CH5CALLER_CHAN="$CH5CALLER/.kickoff/chan"
+mkdir -p "$CH5CALLER_CHAN"
+CH5AD_CHAN="$(ch_canon "$CH5AD/.kickoff/chan")"
+sed -i "s|^export TELEGRAM_STATE_DIR=.*|export TELEGRAM_STATE_DIR=\"\${TELEGRAM_STATE_DIR:-\$REPO_DIR/.kickoff/chan}\"|" \
+  "$CH5AD/.kickoff/instance.env"
+chk "CASE D2 fixture: the adopter's instance.env anchors its channel on a BARE \$REPO_DIR (no \$PWD fallback to rescue it)" \
+  "grep -qF 'export TELEGRAM_STATE_DIR=\"\${TELEGRAM_STATE_DIR:-\$REPO_DIR/.kickoff/chan}\"' \"$CH5AD/.kickoff/instance.env\""
+# the fixture's SHARPNESS, asserted: read this file with the cwd CORRECTLY pinned to the adopter but
+# REPO_DIR unset — the pin combination the cwd-only fix would leave — and it still resolves to the
+# root-anchored value. That is the proof D2 constrains the REPO_DIR pin SPECIFICALLY: no cwd pin can
+# stand in for it here, so this assertion cannot be passing for an unrelated reason.
+CH5UNPINNED="$(cd "$CH5AD" 2>/dev/null || true; unset TELEGRAM_STATE_DIR REPO_DIR; set +u; . "$CH5AD/.kickoff/instance.env" >/dev/null 2>&1 || true; printf '%s' "${TELEGRAM_STATE_DIR:-}")"
+chk "CASE D2 fixture is SHARP: even with the CWD pinned to the adopter, a read that UNSETS REPO_DIR resolves the ROOT-anchored /.kickoff/chan — the cwd pin cannot cover this spelling" \
+  "[ \"$CH5UNPINNED\" = /.kickoff/chan ]"
+python3 "$AM" adopters-register --repo "$CH5AD" --tag core-vA --version-dir "$CH5AD" \
+  --channel "$CH5AD_CHAN" --registry "$CH5REG" >/dev/null
+CH5RC=0
+CH5OUT="$(cd "$CH5CALLER" && KICKOFF_VERSIONS_DIR="$(mk)/vers" KICKOFF_ADOPTERS_REGISTRY="$CH5REG" REPO_DIR="$CH5AD" TELEGRAM_STATE_DIR="$CH5CALLER_CHAN" \
+  bash "$KICKOFF" pull core-vB 2>&1)" || CH5RC=$?
+CH5ROW_CHAN="$(ch_row "$CH5REG" "$CH5AD" channel)"
+CH5ROW_TAG="$(ch_row "$CH5REG" "$CH5AD" tag)"
+chk "bare-\$REPO_DIR channel: PULL OK (rc=0)" \
+  "[ $CH5RC -eq 0 ] && printf '%s' \"\$CH5OUT\" | grep -q 'PULL OK'"
+chk "bare-\$REPO_DIR channel: the register REALLY ran (the row's tag advanced to core-vB) — no vacuous pass on the pre-registered row" \
+  "[ \"$CH5ROW_TAG\" = core-vB ]"
+chk "bare-\$REPO_DIR channel [RED when the REPO_DIR pin is dropped]: the row still carries the ADOPTER-anchored channel — REPO_DIR was SET to the repo being read while its instance.env was sourced" \
+  "[ \"$CH5ROW_CHAN\" = \"$CH5AD_CHAN\" ]"
+chk "bare-\$REPO_DIR channel [RED when the REPO_DIR pin is dropped]: no ROOT-anchored /.kickoff/chan was HARD-OVERWRITTEN onto any row in the registry" \
+  "[ -s \"$CH5REG\" ] && ! grep -qF '\"/.kickoff/chan\"' \"$CH5REG\""
+[ "$CH5ROW_CHAN" = "$CH5AD_CHAN" ] || printf '  ── row channel: %s\n  ── expected the ADOPTER-anchored: %s\n  ── an unset REPO_DIR would give:  %s\n' \
+  "${CH5ROW_CHAN:-<no row/channel>}" "$CH5AD_CHAN" "/.kickoff/chan"
+
+# ── CASE E [RED under the OLD `${INSTANCE_ENV:-…}` CALL SITE] ── the caller must not get to choose
+# WHICH FILE the channel is read out of. Cases A–D2 all pin where a read RESOLVES (the ambient value,
+# the cwd, REPO_DIR) and every one of them takes for granted that the file being read is the
+# ADOPTER's. A first cut of this fix passed a second argument:
+#     _channel_of_repo "$REPO_DIR" "${INSTANCE_ENV:-$KICKOFF_DIR/instance.env}"
+# "so a relocated config is registered as the running instance uses it". But INSTANCE_ENV is
+# CALLER-ENVIRONMENT ONLY — deliberately NOT in _INSTANCE_ENV_WHITELIST (kickoff:245), so no repo's
+# instance.env can ever set it and nothing repo-anchored ever fills it; the only thing that does is
+# the session that invoked the pull. A worker session exports its own INSTANCE_ENV, so the sweep read
+# org A's FILE for org B's row: THE INCIDENT again, through a third door — and in the HARD-OVERWRITE
+# direction, because the wrong value is non-empty and adopters-register's `empty ⇒ MERGE` guard never
+# engages. Pinning the cwd and REPO_DIR buys nothing when the caller picks the file: all three pins
+# hold and the answer is still the caller's (asserted below, on the real helper). The call site is now
+# `_channel_of_repo "$REPO_DIR"` — repo-anchored, no second argument — and THAT is what this lane locks.
+read -r _CH6CLONE CH6AD _CH6SNAP <<< "$(build_pull_case "$CORE")"
+CH6REG="$(mk)/adopters.json"; CH6CALLER="$(mk)"; CH6VERS="$(mk)"
+CH6CALLER_CHAN="$CH6CALLER/.kickoff/chan"; mkdir -p "$CH6CALLER/.kickoff/state" "$CH6CALLER_CHAN"
+CH6AD_CHAN="$(ch_canon "$CH6AD/.kickoff/chan")"
+CH6CALLER_ENV="$CH6CALLER/.kickoff/instance.env"
+# THE CALLER's own config — another worker's instance.env: its OWN channel, its OWN state paths, and
+# the core clone/remote lines lifted VERBATIM from the adopter's file. That last part is deliberate:
+# the ambient INSTANCE_ENV is what the engine load-imports for the WHOLE run, so sharing the two
+# clone-locating lines makes the pull mechanically identical to CASE A's whichever file gets loaded —
+# leaving WHICH FILE THE CHANNEL CAME FROM as the single variable this lane moves.
+{ grep -E '^export (KICKOFF_CORE_DIR|KICKOFF_CORE_REMOTE)=' "$CH6AD/.kickoff/instance.env"
+  printf 'export TELEGRAM_STATE_DIR="%s"\n' "$CH6CALLER_CHAN"
+  printf 'export MC_STATE_FILE="%s"\n'      "$CH6CALLER/.kickoff/state/mission-state.json"
+  printf 'export MEMORY_DB="%s"\n'          "$CH6CALLER/.kickoff/state/memory-index.db"
+} > "$CH6CALLER_ENV"
+chk "CASE E fixture: the CALLER's instance.env declares its OWN distinct channel and names the adopter's channel NOWHERE" \
+  "grep -qF 'export TELEGRAM_STATE_DIR=\"$CH6CALLER_CHAN\"' \"$CH6CALLER_ENV\" && ! grep -qF '$CH6AD/.kickoff/chan' \"$CH6CALLER_ENV\""
+chk "CASE E fixture: the ADOPTER's own instance.env still declares the ADOPTER's channel (the file a repo-anchored read must land on)" \
+  "grep -qF 'export TELEGRAM_STATE_DIR=\"$CH6AD/.kickoff/chan\"' \"$CH6AD/.kickoff/instance.env\""
+# the fixture's SHARPNESS, asserted (a negative control) — and this one is run against the REAL
+# helper, sed-extracted from the engine under test (the adopt-selftest §20(b) driver idiom), driven
+# with the OLD call site's argv over THESE fixtures. It shows the cwd pin, the REPO_DIR pin and the
+# `unset` all doing their job and the answer STILL being the caller's, which is precisely why the
+# second argument had to go. Extracted, not re-implemented: no re-statement of the idiom can drift.
+CH6DRV="$(mk)/drv.sh"
+{ printf 'set -uo pipefail\n'
+  sed -n '/^_channel_of_repo() {/,/^}/p' "$KICKOFF"
+  printf '_channel_of_repo %q %q\n' "$CH6AD" "$CH6CALLER_ENV"
+} > "$CH6DRV"
+CH6HONOURED="$(cd "$CH6CALLER" && bash "$CH6DRV" 2>/dev/null || true)"
+chk "CASE E fixture is SHARP: the REAL helper driven with the OLD call site's argv (\$INSTANCE_ENV as arg 2) returns the CALLER's channel — every pin held, and the caller still chose the value" \
+  "[ \"$CH6HONOURED\" = \"$CH6CALLER_CHAN\" ] && [ \"$CH6HONOURED\" != \"$CH6AD/.kickoff/chan\" ]"
+chk "CASE E control really executed the ENGINE's own helper (body sed-extracted from the engine under test, non-empty read)" \
+  "[ -n \"$CH6HONOURED\" ] && grep -q '^_channel_of_repo() {' \"$CH6DRV\" && grep -q 'unset TELEGRAM_STATE_DIR' \"$CH6DRV\""
+# THE RUN — the real front door, FROM the caller's cwd, with the caller's INSTANCE_ENV ambient. The
+# adopter's row is pre-registered with its REAL channel so the hard-overwrite is what fails, not a
+# missing row. (KICKOFF_VERSIONS_DIR is redirected into a fixture dir on principle — this lane has no
+# different-tag sibling so no worktree is parked, but no lane may ever be able to write ~/kickoff-versions.)
+python3 "$AM" adopters-register --repo "$CH6AD" --tag core-vA --version-dir "$CH6AD" \
+  --channel "$CH6AD_CHAN" --registry "$CH6REG" >/dev/null
+CH6RC=0
+CH6OUT="$(cd "$CH6CALLER" && KICKOFF_ADOPTERS_REGISTRY="$CH6REG" KICKOFF_VERSIONS_DIR="$CH6VERS" \
+  REPO_DIR="$CH6AD" INSTANCE_ENV="$CH6CALLER_ENV" bash "$KICKOFF" pull core-vB 2>&1)" || CH6RC=$?
+CH6ROW_CHAN="$(ch_row "$CH6REG" "$CH6AD" channel)"
+CH6ROW_TAG="$(ch_row "$CH6REG" "$CH6AD" tag)"
+chk "caller-INSTANCE_ENV pull: PULL OK (rc=0) — the caller's config was ambient for the WHOLE run and the pull still completed, so the row below is a real register" \
+  "[ $CH6RC -eq 0 ] && printf '%s' \"\$CH6OUT\" | grep -q 'PULL OK'"
+chk "caller-INSTANCE_ENV pull: the register REALLY ran (the row's tag advanced to core-vB) — no vacuous pass on the pre-registered row" \
+  "[ \"$CH6ROW_TAG\" = core-vB ]"
+chk "caller-INSTANCE_ENV pull [RED under the \${INSTANCE_ENV:-…} call site]: the row carries the ADOPTER's OWN channel — which FILE was read is decided by the REPO, never by the caller's environment" \
+  "[ \"$CH6ROW_CHAN\" = \"$CH6AD_CHAN\" ]"
+chk "caller-INSTANCE_ENV pull [RED under the \${INSTANCE_ENV:-…} call site]: the caller's channel is ABSENT from the ENTIRE registry (no row was hard-overwritten with it)" \
+  "[ -s \"$CH6REG\" ] && ! grep -qF \"\$(ch_canon \"$CH6CALLER_CHAN\")\" \"$CH6REG\""
+[ "$CH6ROW_CHAN" = "$CH6AD_CHAN" ] || printf '  ── row channel: %s\n  ── expected the ADOPTER'\''s:            %s\n  ── the caller'\''s INSTANCE_ENV names: %s\n' \
+  "${CH6ROW_CHAN:-<no row/channel>}" "$CH6AD_CHAN" "$(ch_canon "$CH6CALLER_CHAN")"
+
+# ── CASE F [RED when the `cd "$repo"` pin is dropped] ── the CWD pin, on the one spelling that can
+# SEE it. Neither D1 nor D2 can: D1's `${REPO_DIR:-$PWD}` is satisfied by EITHER pin (with REPO_DIR
+# exported to the repo the `$PWD` fallback never fires, so deleting the cd changes nothing there), and
+# D2's bare `$REPO_DIR` has no `$PWD` in it at all. Only an anchor that is `$PWD` and NOTHING ELSE
+# makes `cd "$repo"` load-bearing — and that is a real adopter's file, not a contrivance: it is what
+# instance.env.example's taught `${REPO_DIR:-$PWD}` becomes when an adopter editing their config from
+# inside their own repo keeps the half that worked. The pull then runs from ANOTHER directory (the
+# fleet sweep: standing in org A's checkout, upgrading org B) and the anchor resolves wherever the
+# reader happens to stand — non-empty, so the `empty ⇒ MERGE` guard never engages and org A's
+# directory HARD-OVERWRITES org B's row.
+# SCOPE: this drives the REAL `kickoff pull` end-to-end (no helper driver needed) — cmd_pull never
+# cd's, so at the step-4d call site $PWD is still the caller's cwd and the deletion is observable
+# through the front door.
+read -r _CH7CLONE CH7AD _CH7SNAP <<< "$(build_pull_case "$CORE")"
+CH7REG="$(mk)/adopters.json"; CH7CALLER="$(mk)"; CH7VERS="$(mk)"; mkdir -p "$CH7CALLER/.kickoff/chan"
+CH7AD_CHAN="$(ch_canon "$CH7AD/.kickoff/chan")"
+sed -i "s|^export TELEGRAM_STATE_DIR=.*|export TELEGRAM_STATE_DIR=\"\${TELEGRAM_STATE_DIR:-\$PWD/.kickoff/chan}\"|" \
+  "$CH7AD/.kickoff/instance.env"
+chk "CASE F fixture: the adopter's instance.env anchors its channel on a BARE \$PWD — no REPO_DIR anywhere in the expression, so ONLY the cwd pin can resolve it" \
+  "grep -qF 'export TELEGRAM_STATE_DIR=\"\${TELEGRAM_STATE_DIR:-\$PWD/.kickoff/chan}\"' \"$CH7AD/.kickoff/instance.env\" && ! grep 'TELEGRAM_STATE_DIR' \"$CH7AD/.kickoff/instance.env\" | grep -q 'REPO_DIR'"
+# the fixture's SHARPNESS, asserted (a negative control): the EXACT mutant read — the `unset` and the
+# REPO_DIR pin still in place, ONLY the cd removed, cwd left at the caller's — lands in the CALLER's
+# directory over this very file. So the lane below constrains the cwd pin SPECIFICALLY and cannot be
+# passing because REPO_DIR happened to cover it. In a command-substitution subshell: nothing escapes.
+CH7UNPINNED="$(cd "$CH7CALLER" 2>/dev/null || true; unset TELEGRAM_STATE_DIR; REPO_DIR="$CH7AD"; export REPO_DIR; set +u; . "$CH7AD/.kickoff/instance.env" >/dev/null 2>&1 || true; printf '%s' "${TELEGRAM_STATE_DIR:-}")"
+chk "CASE F fixture is SHARP: the same read WITHOUT the cd (unset + REPO_DIR pin both kept) resolves the CALLER's directory — the exact mutant, reproduced on this file" \
+  "[ \"$CH7UNPINNED\" = \"$CH7CALLER/.kickoff/chan\" ] && [ \"$CH7UNPINNED\" != \"$CH7AD/.kickoff/chan\" ]"
+# THE RUN — from the CALLER's cwd, with NO ambient channel set: the caller's cwd is the lane's only
+# caller-side input, so nothing but the cd pin can be under test. Row pre-registered with the
+# adopter's real channel, so a caller-anchored value is observed as the hard OVERWRITE it is.
+python3 "$AM" adopters-register --repo "$CH7AD" --tag core-vA --version-dir "$CH7AD" \
+  --channel "$CH7AD_CHAN" --registry "$CH7REG" >/dev/null
+CH7RC=0
+CH7OUT="$(cd "$CH7CALLER" && KICKOFF_ADOPTERS_REGISTRY="$CH7REG" KICKOFF_VERSIONS_DIR="$CH7VERS" \
+  REPO_DIR="$CH7AD" bash "$KICKOFF" pull core-vB 2>&1)" || CH7RC=$?
+CH7ROW_CHAN="$(ch_row "$CH7REG" "$CH7AD" channel)"
+CH7ROW_TAG="$(ch_row "$CH7REG" "$CH7AD" tag)"
+chk "bare-\$PWD channel: PULL OK (rc=0) — run from the CALLER's directory, so the row below is a real fleet-sweep register" \
+  "[ $CH7RC -eq 0 ] && printf '%s' \"\$CH7OUT\" | grep -q 'PULL OK'"
+chk "bare-\$PWD channel: the register REALLY ran (the row's tag advanced to core-vB) — no vacuous pass on the pre-registered row" \
+  "[ \"$CH7ROW_TAG\" = core-vB ]"
+chk "bare-\$PWD channel [RED when the cd pin is dropped]: the row carries the ADOPTER-anchored resolution (<adopter>/.kickoff/chan) — the cwd was pinned to the repo being READ, not left at the caller's" \
+  "[ \"$CH7ROW_CHAN\" = \"$CH7AD_CHAN\" ]"
+chk "bare-\$PWD channel [RED when the cd pin is dropped]: the CALLER's DIRECTORY appears NOWHERE in the registry, raw or realpath (no \$PWD anchored a value there)" \
+  "[ -s \"$CH7REG\" ] && ! grep -qF \"$CH7CALLER\" \"$CH7REG\" && ! grep -qF \"\$(ch_canon \"$CH7CALLER\")\" \"$CH7REG\""
+[ "$CH7ROW_CHAN" = "$CH7AD_CHAN" ] || printf '  ── row channel: %s\n  ── expected the ADOPTER-anchored: %s\n  ── the caller-anchored would be:  %s\n' \
+  "${CH7ROW_CHAN:-<no row/channel>}" "$CH7AD_CHAN" "$CH7CALLER/.kickoff/chan"
+echo
+
+# ══════════════════════════════════════════════════════════════════════════════════════
+echo "10. suite hygiene — NO fixture process this suite spawned outlives the run"
+# ══════════════════════════════════════════════════════════════════════════════════════
+# Every `sleep 300 &` live-supervisor fixture is killed INLINE after its case; the EXIT trap is the
+# safety net for a set -e abort between spawn and kill. Assert HERE (before the trap fires) that the
+# suite's OWN reaping already left nothing alive — a skipped kill or a leaked spawn fails LOUD. Scoped
+# to THIS run's exact recorded pids (kill -0), never a `ps|grep` pattern that would catch another org.
+LEAKED_PIDS=""
+while IFS= read -r _p; do
+  case "$_p" in ''|*[!0-9]*) continue ;; esac
+  kill -0 "$_p" 2>/dev/null && LEAKED_PIDS="$LEAKED_PIDS $_p"
+done < "$PID_LIST"
+chk "no fixture process this suite spawned is still alive (all recorded \`sleep 300 &\` pids reaped)" \
+  "[ -z \"$LEAKED_PIDS\" ]"
+[ -n "$LEAKED_PIDS" ] && printf '  ── leaked fixture pids (should be empty):%s\n' "$LEAKED_PIDS"
+echo
+
+# ══════════════════════════════════════════════════════════════════════════════════════
+echo "17. consumer-verify — the pull summary READS the delivered opencode set back off the adopter's disk"
+# ══════════════════════════════════════════════════════════════════════════════════════
+# THE COMPLAINT THIS CLOSES: the pull summary CLAIMED the opencode engine-parity set was
+# back-filled; nothing ever READ the delivered files back off the ADOPTER'S OWN DISK — the
+# writer's bookkeeping graded its own homework. After the 4b-2 back-fill, the summary now
+# verifies the FIVE surfaces (opencode.json parses + default_agent=coordinator · NO
+# model/provider key anywhere · the 5 crew charters · BOTH plugins · the AGENTS.md pointer
+# resolves) and prints ONE honest scope line: files verified, NOT a live session (no spawn).
+# A failed check is NAMED loudly — a diagnostic, never a gate (rc stays 0, the success line
+# never prints over a broken set).
+#
+# RED-FIRST: these lanes ran against the pre-slice kickoff and were observed RED (no verify
+# line on a green back-fill pull; pre-existing broken files went unnamed). The RED lanes are
+# BOXE-SHAPED by necessity: a RECORDED seam's hand-edit REFUSES the whole pull at 4b (fail-
+# closed, by design — a different guard), so a broken file must arrive as the adopter's own
+# PRE-EXISTING bytes (kept, never clobbered, never recorded) for the pull to go green while
+# the consumer's disk is wrong — precisely the silence this feature exists to end.
+# HERMETIC: build_pull_case fixtures + scratch registries; the verify is asserted READ-ONLY.
+# jsonc-tolerant pin walk (opencode parses opencode.json as jsonc — the §5b tolerance).
+cv_pinfree() {   # $1 = opencode.json path → rc 0 iff NO model/provider-ish key anywhere in it
+  python3 -c "
+import json, re, sys
+def walk(d):
+    if isinstance(d, dict):
+        return all(('model' not in k.lower() and 'provider' not in k.lower()) for k in d) and all(walk(v) for v in d.values())
+    if isinstance(d, list): return all(walk(v) for v in d)
+    return True
+text = open(sys.argv[1]).read()
+sys.exit(0 if walk(json.loads(re.sub(r'^\s*//.*$', '', text, flags=re.M))) else 1)
+" "$1"
+}
+
+# (a) the happy back-fill: the verify line is present AND all five checks demonstrably true
+#     on the adopter's own disk.
+read -r CV_CLONE CV_ADOPTER _CV_SNAP <<< "$(build_pull_case "$CORE")"
+CV_REG="$(mk)/adopters.json"
+CV_RC=0
+CV_OUT="$(KICKOFF_ADOPTERS_REGISTRY="$CV_REG" REPO_DIR="$CV_ADOPTER" bash "$KICKOFF" pull core-vB 2>&1)" || CV_RC=$?
+chk "17 (a) the back-fill pull exits 0"                                                        "[ $CV_RC -eq 0 ]"
+chk "17 (a) the summary carries the consumer-verify line (files verified, NOT a live session)" \
+  "printf '%s' \"\$CV_OUT\" | grep -qF 'opencode: verified files, not a live session'"
+chk "17 (a) the verify line names all five surfaces it verified" \
+  "printf '%s' \"\$CV_OUT\" | grep -F 'opencode: verified files' | grep -q 'default_agent=coordinator' \
+   && printf '%s' \"\$CV_OUT\" | grep -F 'opencode: verified files' | grep -q 'no model/provider pin' \
+   && printf '%s' \"\$CV_OUT\" | grep -F 'opencode: verified files' | grep -q 'charters' \
+   && printf '%s' \"\$CV_OUT\" | grep -F 'opencode: verified files' | grep -q 'plugins' \
+   && printf '%s' \"\$CV_OUT\" | grep -F 'opencode: verified files' | grep -q 'AGENTS.md resolves'"
+chk "17 (a) [1] delivered opencode.json parses + default_agent=coordinator (on the adopter's disk)" \
+  "[ \"\$(oc_json_pull \"$CV_ADOPTER/opencode.json\" default_agent)\" = \"coordinator\" ]"
+chk "17 (a) [2] NO model/provider key anywhere in the delivered opencode.json"                 "cv_pinfree \"$CV_ADOPTER/opencode.json\""
+chk "17 (a) [3] all 5 crew charters present on the adopter's disk"                             "[ \$(ls \"$CV_ADOPTER/.opencode/agent/\"*.md 2>/dev/null | wc -l) -ge 5 ]"
+chk "17 (a) [4] BOTH plugins present on the adopter's disk" \
+  "[ -s \"$CV_ADOPTER/.opencode/plugins/memory-search.js\" ] && [ -s \"$CV_ADOPTER/.opencode/plugins/engine-credit.js\" ]"
+chk "17 (a) [5] the AGENTS.md pointer exists AND resolves (not a dangling link)"               "[ -e \"$CV_ADOPTER/AGENTS.md\" ]"
+
+# (b) THE RED PROOF — the adopter's OWN pre-existing broken files (a pinned opencode.json, an
+#     emptied charter, a dangling AGENTS.md link) are KEPT by the never-clobber back-fill, the
+#     pull goes green — and the verify must NAME each broken check, loudly, rc 0, no success
+#     line, and NEVER touch the adopter's files (read-only diagnostic).
+read -r CVX_CLONE CVX_ADOPTER _CVX_SNAP <<< "$(build_pull_case "$CORE")"
+CVX_REG="$(mk)/adopters.json"
+mkdir -p "$CVX_ADOPTER/.opencode/agent"
+printf '{"default_agent":"coordinator","provider":{"stub":{"models":{"m":{}}}}}\n' > "$CVX_ADOPTER/opencode.json"
+: > "$CVX_ADOPTER/.opencode/agent/planner.md"
+ln -s NOWHERE "$CVX_ADOPTER/AGENTS.md"     # lexists=true → never clobbered; does NOT resolve
+cp "$CVX_ADOPTER/opencode.json" "$CVX_ADOPTER/ocjson.pre"
+cp "$CVX_ADOPTER/.opencode/agent/planner.md" "$CVX_ADOPTER/planner.pre"
+CVX_RC=0
+CVX_OUT="$(KICKOFF_ADOPTERS_REGISTRY="$CVX_REG" REPO_DIR="$CVX_ADOPTER" bash "$KICKOFF" pull core-vB 2>&1)" || CVX_RC=$?
+chk "17 (b) the pull still exits 0 over broken consumer files — the verify is a diagnostic, NEVER a gate" "[ $CVX_RC -eq 0 ]"
+chk "17 (b) the verify output is LOUD about the broken set (opencode VERIFY ...)"              "printf '%s' \"\$CVX_OUT\" | grep -q 'opencode VERIFY'"
+chk "17 (b) [2 RED] their pinned opencode.json is NAMED (the model/provider check)"           "printf '%s' \"\$CVX_OUT\" | grep -q 'model/provider key'"
+chk "17 (b) [3 RED] their emptied charter is NAMED (planner)"                                 "printf '%s' \"\$CVX_OUT\" | grep -q 'planner' && printf '%s' \"\$CVX_OUT\" | grep -qi 'charter'"
+chk "17 (b) [5 RED] their dangling AGENTS.md link is NAMED (the pointer-resolves check)"      "printf '%s' \"\$CVX_OUT\" | grep -q 'AGENTS.md pointer'"
+chk "17 (b) NO success line over a broken set (a failed read-back never claims 'verified')"   "! printf '%s' \"\$CVX_OUT\" | grep -qF 'opencode: verified files'"
+chk "17 (b) the verify is READ-ONLY: their opencode.json is byte-identical after the pull"     "cmp -s \"$CVX_ADOPTER/ocjson.pre\" \"$CVX_ADOPTER/opencode.json\""
+chk "17 (b) the verify is READ-ONLY: their emptied charter is byte-identical after the pull"   "cmp -s \"$CVX_ADOPTER/planner.pre\" \"$CVX_ADOPTER/.opencode/agent/planner.md\""
+
+# (c) the HONEST SKIP — a pull to an opencode-LESS tag (the pinned core-vA clone predates the
+#     set) runs the whole path with NO back-fill, NO verify line, and NO crash: nothing was
+#     delivered, so nothing is claimed (the same silence as the back-fill's own skip discipline).
+read -r CVS_CLONE CVS_ADOPTER _CVS_SNAP <<< "$(build_pull_case "$CORE")"
+CVS_REG="$(mk)/adopters.json"
+CVS_RC=0
+CVS_OUT="$(KICKOFF_ADOPTERS_REGISTRY="$CVS_REG" REPO_DIR="$CVS_ADOPTER" bash "$KICKOFF" pull core-vA 2>&1)" || CVS_RC=$?
+chk "17 (c) an older/opencode-less-tag pull exits 0 (no crash on a world without the set)"     "[ $CVS_RC -eq 0 ]"
+chk "17 (c) NO verify line and NO VERIFY FAILED — nothing claimed where nothing was delivered" \
+  "! printf '%s' \"\$CVS_OUT\" | grep -qF 'opencode: verified files' && ! printf '%s' \"\$CVS_OUT\" | grep -q 'opencode VERIFY'"
+echo
+
 echo "──────────────────────────────"
 echo "  $PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ] && { echo "  ✅ kickoff pull holds"; exit 0; } || { echo "  ❌ see failures above"; exit 1; }
+# The failure summary deliberately does NOT carry the "  ❌" check-marker: lane D's executor proof
+# counts "  ❌" lines in this suite's output as the FAILED-CHECK count (exactly 1 = the frozen
+# digest line only). A second marker here would make every honest one-failure run unprovable.
+[ "$FAIL" -eq 0 ] && { echo "  ✅ kickoff pull holds"; exit 0; } || { echo "  ══ see failures above — this run is NOT green"; exit 1; }

@@ -1,0 +1,43 @@
+{
+  "outputStyle": "Plain Report",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "MEMORY_DIR=$CLAUDE_PROJECT_DIR/memory MEMORY_HOOK_BM25_FLOOR=-8.0 MEMORY_HOOK_VEC_FLOOR=0.23 NODE_NO_WARNINGS=1 $CLAUDE_PROJECT_DIR/memory-retrieval/hook.mjs",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/plugin/hooks/mc-hook.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/plugin/hooks/mc-hook.sh\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "telegram@claude-plugins-official": true
+  }
+}
