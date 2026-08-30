@@ -6,7 +6,7 @@ There are no static templates — the system scaffolds fresh.
 **Get in with one command** — clones + pins the engine at the reviewed release tag and links the
 `kickoff` front door into `~/.local/bin` (already on your PATH if that dir is; if not, the installer
 prints the full path plus an optional one-liner — no dotfile edit). Safe to re-run: it verifies and
-repairs, never moves an existing pin — `kickoff pull` owns upgrades:
+repairs, never moves an existing pin — `kickoff pull` owns upgrades (alpha note: name the tag — `kickoff pull core-v1.0.0-alpha`; bare auto-select waits for the first stable release):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/vinceferro/kickoff/core-v1.0.0-alpha/install.sh | sh

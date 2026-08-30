@@ -27,4 +27,3 @@ mission-control/experiments/adopt-preview.html
 # Same class, same verification (2026-07-22): a 3.4 MB bundle, one 302k-char line, ZERO
 # high-signal secrets. Listed per-FILE, deliberately not `experiments/*` — that dir also holds
 # real hand-written .mjs sources which must stay scanned.
-mission-control/experiments/adoption-story-preview.html

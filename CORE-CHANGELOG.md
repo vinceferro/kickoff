@@ -7,7 +7,16 @@ runs `kickoff pull` to update — the core flows in **once**, no hand-patched co
 log records what changed per core version (reverse-chronological); read it before you `kickoff pull`
 a newer tag.
 
-## core-v0.42 — unreleased
+## core-v1.0.0-alpha — first public line
+
+Clean-history start for the public repo. Same framework as the private line's core-v0.42 (parity
+proven there across a 6-repo fleet), packaged for strangers: coordinator+specialists charters and
+skills, hybrid memory machinery (corpus ships empty — org-local by design), local quality gates,
+`kickoff adopt`. The core-v0.6 baseline is vendored at this repo's root so the cross-version
+drift-guard lane runs unchanged. NOTE while this is an alpha: `kickoff pull` auto-select waits for
+the first stable numeric tag — pull **by name**: `kickoff pull core-v1.0.0-alpha`.
+
+## core-v0.42 — released 2026-08-30 (private line)
 
 **Engine parity becomes REAL for adopters: the opencode seam set travels, the pull back-fills the
 installed base, and every delivery is now verified from the consumer's own disk.** Plus the brick
