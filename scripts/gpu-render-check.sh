@@ -9,7 +9,7 @@
 # and carries --enable-unsafe-swiftshader, so it uses the GPU where there is one and silently falls
 # back to software where there is not. That fallback is the right behaviour — the page still renders
 # — but it is SILENT, and the gap it hides is large: measured on this box, one 3D page cost 9.1 cores
-# in software and 0.6 cores on an RTX 3080 Ti. A 15x slowdown with no signal gets attributed to "the
+# in software and 0.6 cores on a discrete NVIDIA GPU. A 15x slowdown with no signal gets attributed to "the
 # tool is slow" instead of "the GPU is not wired up", which is a debugging trap, not a performance
 # one. So: keep the fallback silent to the PAGE, and make it loud to the OPERATOR.
 #

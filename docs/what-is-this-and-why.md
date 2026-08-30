@@ -46,7 +46,7 @@ One run needed a place to track itself, so the system built one: **Mission Contr
 ## What you can do with it
 
 - **Spin up something new.** Give a brief, get a running, tested first slice — a green test or a live server, not a blank page.
-- **Adopt a repo you already have.** Most work isn't greenfield: drop the pattern into an existing codebase and steer it the same way. ([`ADOPT.md`](../ADOPT.md)) A live, already-AI-steered brownfield app adopted the whole system this way — additively and reversibly — told by shape in [`docs/adoption-story.md`](./adoption-story.md).
+- **Adopt a repo you already have.** Most work isn't greenfield: drop the pattern into an existing codebase and steer it the same way. ([`ADOPT.md`](../ADOPT.md)) A live, already-AI-steered brownfield app adopted the whole system this way — additively and reversibly.
 - **Grow an org, not just code.** When work keeps recurring off the build path — comms, growth, data — ask the coordinator to author a specialist: it drafts the charter, you approve, it joins the crew. ([`GROWTH.md`](../GROWTH.md))
 
 The proof it isn't a toy: a real, full-stack B2B product was built this way over months — steered, tested, shipped.

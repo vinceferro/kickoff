@@ -92,7 +92,6 @@ CORE-CHANGELOG.md
 #   development branch but was never carried into the PUBLIC release tree, so on a pull adopter —
 #   directory nobody looked at. It settles the empty case in pure bash — no interpreter start — so
 #   disagreed within one slice, and a keydir divergence fails GREEN. One manifest entry is the
-docs/moonpay-2min-runofshow.md
 docs/PARITY.md
 #   engine-credit.js keeps the engine seam honest (parity is a release gate, not a
 #   engine-limited. parity-report-selftest.sh deliberately does NOT: test suites never travel

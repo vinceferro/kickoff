@@ -99,7 +99,7 @@ echo '{"prompt":"..."}' | ./run.sh hook        # Claude Code event shape on stdi
 - **`log-stats.mjs`** — summarizes `retrieval-log.jsonl` (the hook's live log):
   fire count, surfaced %, suppression rate + reasons, most-surfaced memories.
 
-**Headline eval result — Bliz reference corpus (108 facts, REAL local embeddings, 2026-06-26):** hybrid with a
+**Headline eval result — reference-adopter corpus (108 facts, REAL local embeddings, 2026-06-26):** hybrid with a
 real local sentence-transformer (`Xenova/all-MiniLM-L6-v2`) hits **recall@1 85% /
 recall@3 90% / recall@5 90% / MRR 0.875**, noise suppression **3/3** — a
 **+25pp recall@1** jump over the keyword-only baseline (60%) and a decisive win

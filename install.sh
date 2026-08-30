@@ -1,7 +1,7 @@
 #!/bin/sh
 # install.sh — the one-command installer for kickoff  (v0.7: "get in with one command").
 #
-#   curl -fsSL https://raw.githubusercontent.com/vinceferro/kickoff/core-v0.23/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/vinceferro/kickoff/core-v1.0.0-alpha/install.sh | sh
 #   (the canonical, tag-pinned URL — /main/ is the moving alias; see docs/release-checklist.md §4)
 #
 # WHAT IT DOES (machine-level only — no repo is touched, no file of yours is edited)

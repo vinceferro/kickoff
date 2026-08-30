@@ -35,7 +35,7 @@ const ok = (cond, msg) => (cond ? (pass++, console.log(`  ✓ ${msg}`)) : (fail+
 
 // ── MUST flag (real pending/open state) ──────────────────────────────────────
 for (const [hay, why] of [
-  ["bliz turnkey still pending the operator's run", "pending"],
+  ["the turnkey install is still pending the operator's run", "pending"],
   ["blocked on the ruleset review", "blocked"],
   ["slice LOW debt register", "debt"],
   ["this is still unresolved", "unresolved"],

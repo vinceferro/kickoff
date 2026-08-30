@@ -338,7 +338,7 @@ announce_restart() {
   # the WORK, not the refresh mechanics. Read the CURRENT board state — the `headline`
   # is the coordinator-maintained "what's the org doing now" line, rewritten at every
   # checkpoint; `in_progress[0]` is insertion-ordered so its [0] is the OLDEST item and
-  # fossilizes as the org marches on (it froze the ping for ~10 restarts — msg 1492). So
+  # fossilizes as the org marches on (it froze the ping for ~10 restarts). So
   # prefer the headline, fall back to in_progress[0] (an adopter with no headline yet),
   # treating an empty-string headline as absent. Any failure degrades to the generic
   # line — the announce itself must never break on a board hiccup.

@@ -75,7 +75,7 @@ that died as a bare ENOENT (the `DEFAULT_MEMORY_DIR` fallback matched *no* real 
   them "invisible" is noise that trains readers to ignore real orphans. One notice line, exit 0.
 - **`release-gate.sh` — an ambient identity pattern no longer HARD-blocks on a word it did not
   cause.** The leak scan derives patterns from the running box's username and hostname. A second
-  machine named `alarm` — an English word carried as prose in 19 files of `core-v0.8.1` — therefore
+  machine whose hostname is a common English word — carried as prose in 19 files of `core-v0.8.1` — therefore
   read every clean tree as a machine-name leak, reddening `(b)`, `(g6)` and the `(l1)`/`(l2)` lanes
   that parse `(b)`'s summary, and blocking **every push from that machine** (the suite is a
   registered pre-push gate). The discriminator is INTRODUCTION, not presence: an ambient pattern
@@ -1861,7 +1861,7 @@ these safely, and Mission Control reporting an adopter can turn on with zero cha
   `pnpm install` run with cwd = the freshly-pinned core clone mutated that TRACKED file (appending
   `ignoredBuiltDependencies` etc., sometimes exiting non-zero on top), so the clone went git-dirty
   between the pull's lock-write and its pin verify and preflight #6 correctly failed closed on
-  EVERY model-installing `kickoff pull` (the 2026-07-10 Bliz v0.4.1 upgrade breaker). Root-cause
+  EVERY model-installing `kickoff pull` (the 2026-07-10 reference-adopter v0.4.1 upgrade breaker). Root-cause
   fix in `memory-retrieval/install-model.mjs`: each package manager now runs in a throwaway stage
   OUTSIDE the clone (copies of only the install inputs; staged under the durable model-cache dir,
   since adopter `/tmp` can be noexec) — it may mutate its copies freely — and on success ONLY the

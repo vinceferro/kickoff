@@ -1,6 +1,6 @@
 # kickoff
 
-[![core release](https://img.shields.io/badge/core-v0.39-2ea44f)](../../releases/tag/core-v0.39)
+[![core release](https://img.shields.io/badge/core-v1.0.0--alpha-2ea44f)](../../releases/tag/core-v1.0.0-alpha)
 [![engines](https://img.shields.io/badge/engines-claude%20%7C%20opencode-blue)](#pick-your-battery)
 [![licence](https://img.shields.io/badge/licence-MIT-green)](./LICENSE)
 [**See it live →**](https://vinceferro.github.io/kickoff/)
@@ -35,7 +35,7 @@ brief and it plans, builds, tests, reviews and reports while you steer in a sent
 | **L2** | **system → whole domain** | **build the builder once, then steer** |
 
 Parallel. Persistent. Async. Context-partitioned. Pocket-accessible.
-And since core-v0.39: **engine-agnostic** — your org's memory, charters and history live in YOUR
+And the core is **engine-agnostic** — your org's memory, charters and history live in YOUR
 repos. Engines are replaceable components — we flipped the entire fleet mid-flight to prove it.
 Models are still someone's service; switching them costs one line, not a migration.
 
@@ -87,7 +87,7 @@ your fleet doesn't notice.
 
 ```bash
 # 1 · install (pins a reviewed release; prints tag @ commit so you can audit)
-curl -fsSL https://raw.githubusercontent.com/vinceferro/kickoff/core-v0.39/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/vinceferro/kickoff/core-v1.0.0-alpha/install.sh | sh
 
 # 2 · adopt a project — installs the standard org, engine-neutral
 cd ~/my-app && kickoff adopt

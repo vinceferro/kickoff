@@ -7,8 +7,8 @@ This module is **portable** — no host path is hardcoded. You point it at a cor
 of markdown memory files with one env var (`MEMORY_DIR`) and wire one hook. The
 engineering substance is **measured** (see [METRICS.md](./METRICS.md)): on
 kickoff's own `memory/` corpus, recall@1 **70% (keyword) → 85% (hybrid w/ real
-local embeddings), +15pp**, noise fully suppressed. (The separate 108-fact Bliz
-reference corpus goes **60% → 85%**, +25pp.)
+local embeddings), +15pp**, noise fully suppressed. (The separate 108-fact
+reference-adopter corpus goes **60% → 85%**, +25pp.)
 
 ---
 
@@ -171,12 +171,12 @@ This runs the labelled eval set through **keyword-only vs hybrid** and prints
 recall@1/3/5, MRR, per-case pass/fail, and noise suppression — so you can *show*
 the engineering is measured, not asserted. Machine-readable: `./run.sh eval --json`.
 
-> **Note — the shipped eval set is already kickoff's own.** `eval-set.json` holds
-> **kickoff's own** `memory/` slugs (24 cases), so `./run.sh eval` above measures
-> kickoff directly — **nothing to `cp` for kickoff**. The original **108-fact Bliz
-> reference** set behind the `60%→85%` origin evidence is a private third-party
-> corpus and does **not** ship. To onboard a **new, third-party** corpus, start from
-> the template:
+> **Note — the shipped eval set is the neutral default.** `eval-set.json` ships as a
+> copy of the template (generic cases; this repo's `memory/` corpus is empty by
+> design, so their `expect` slugs do not exist in `../memory/` here). The original
+> **108-fact reference-adopter** set behind the `60%→85%` origin evidence is a
+> private third-party corpus and does **not** ship. To onboard **your own** corpus,
+> start from the template:
 >
 > ```bash
 > cp eval-set.template.json eval-set.json   # only for a NEW corpus — then edit the cases
@@ -184,8 +184,8 @@ the engineering is measured, not asserted. Machine-readable: `./run.sh eval --js
 >
 > Write one realistic decision-time query per important memory, **paraphrased** (use
 > different words than the target fact — that's what tests real recall), plus a few
-> `expect: null` noise cases the cutoff must suppress. The template is pre-seeded with
-> cases against kickoff's own memory slugs as a starting point.
+> `expect: null` noise cases the cutoff must suppress. The template's example cases
+> are generic starting points — keep the ones that match your files, edit the rest.
 
 See [METRICS.md](./METRICS.md) for how to read recall@K / MRR, the cutoff-tuning
 trade-off, latency, and the honest stub-vs-real-embeddings finding.
@@ -198,7 +198,7 @@ The vector arm runs a **real, fully-local sentence-transformer**
 (`Xenova/all-MiniLM-L6-v2`, 384-dim) via transformers.js — **no API key, no cloud**.
 This is what flips hybrid from worse-than-keyword (with the old lexical stub) to
 **+15pp recall@1** over the keyword baseline (kickoff corpus; the separate 108-fact
-Bliz reference corpus is **+25pp**, 60→85). Install it in-place:
+reference-adopter corpus is **+25pp**, 60→85). Install it in-place:
 
 ```bash
 cd memory-retrieval/
@@ -247,6 +247,6 @@ pnpm install --ignore-workspace && pnpm approve-builds --all # (e) real local em
 export MEMORY_DIR=$CLAUDE_PROJECT_DIR/memory                 # (b) point at kickoff's memory
 ./run.sh index                                               # (b) build the index
 ./run.sh retrieve "deploying a schema change, what order"    #     sanity check
-./run.sh eval                                                # (d) metrics — eval-set.json is already kickoff's own
+./run.sh eval                                                # (d) metrics — the shipped eval-set.json is the neutral template default
 # (c) add the UserPromptSubmit hook to .claude/settings.json — see above
 ```

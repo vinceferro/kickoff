@@ -9,14 +9,14 @@ prints the full path plus an optional one-liner — no dotfile edit). Safe to re
 repairs, never moves an existing pin — `kickoff pull` owns upgrades:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/vinceferro/kickoff/core-v0.42/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/vinceferro/kickoff/core-v1.0.0-alpha/install.sh | sh
 ```
 
 Rather read it before you run it? Same install, long form — one POSIX-sh file, 279 lines, no sudo and
 no dotfile edits:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/vinceferro/kickoff/core-v0.42/install.sh
+curl -fsSLO https://raw.githubusercontent.com/vinceferro/kickoff/core-v1.0.0-alpha/install.sh
 less install.sh && sh install.sh
 git -C ~/kickoff-core log -1 --format='%H'   # the commit you are pinned to; cross-check CORE-CHANGELOG.md
 ```

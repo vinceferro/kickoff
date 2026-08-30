@@ -8,8 +8,8 @@
 >
 > **In kickoff:** the headline numbers below are measured on *kickoff's own* `memory/` corpus by
 > `./run.sh eval` — **recall@1 85% · recall@3 85% · recall@5 95% · noise-suppression 4/4** (24-case
-> paraphrased eval-set: 20 positive + 4 noise). The technique originated on the original **108-fact Bliz
-> reference corpus** (provenance — see README "Provenance"); the deeper *per-query* walkthroughs further
+> paraphrased eval-set: 20 positive + 4 noise). The technique originated on an original **108-fact
+> reference-adopter corpus** (provenance — see README "Provenance"); the deeper *per-query* walkthroughs further
 > down still illustrate that reference corpus, not the kickoff set. See the repo `README.md` +
 > `scripts/wire-memory-hook.sh`. Re-run for any corpus with `./run.sh eval`.
 
@@ -237,7 +237,7 @@ unchanged embedding) before retrieving — so an edited/added/deleted memory is
 recall-ready the very next turn, with no manual `./run.sh index`. The cost is bounded
 because the work scales with *what changed*, not with corpus size:
 
-| path | kickoff (45 facts) | Bliz reference (108 facts) | notes |
+| path | kickoff (45 facts) | reference adopter (108 facts) | notes |
 |---|---|---|---|
 | full build (`./run.sh index`)   | ~4.0s wall      | ~9.97s            | O(N) embeds — every fact re-embedded |
 | staleness check (no change)     | ~0.4ms / call   | —                 | stat-scan + 2 meta SELECTs, no file reads |
