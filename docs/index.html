@@ -1,0 +1,986 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<!-- user-scalable=no removed: it is an accessibility failure on its own, and it took away the only
+     workaround a reader had when a slide clipped on a phone. Pinch-zoom stays available. -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>A system that builds systems</title>
+<style>
+  /* ===== Reset & tokens ===== */
+  :root {
+    --bg:        #07090d;
+    --bg-2:      #0c1016;
+    --panel:     #11161f;
+    --panel-2:   #161d29;
+    --line:      #232c3a;
+    --line-soft: #1a212d;
+    --ink:       #eef2f8;
+    --ink-2:     #aab4c4;
+    --ink-3:     #6c7889;
+    --accent:    #ff7a3c;   /* warm amber */
+    --accent-2:  #ffae7a;
+    --accent-dim:#3a2418;
+    --good:      #4fd1a5;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, "Helvetica Neue", sans-serif;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { height:100%; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font);
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* ===== Stage: 16:9 letterboxed ===== */
+  #stage {
+    position: fixed;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background:
+      radial-gradient(1200px 800px at 78% -10%, rgba(255,122,60,0.10), transparent 60%),
+      radial-gradient(1000px 700px at 8% 110%, rgba(255,122,60,0.05), transparent 55%),
+      var(--bg);
+  }
+  #deck {
+    position: relative;
+    width: min(100vw, calc(100vh * 16 / 9));
+    height: min(100vh, calc(100vw * 9 / 16));
+    background: var(--bg);
+    overflow: hidden;
+  }
+
+  /* ===== Slides ===== */
+  .slide {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 6.2% 8%;
+    opacity: 0;
+    visibility: hidden;
+    transform: translateY(14px);
+    transition: opacity .42s ease, transform .42s ease;
+    pointer-events: none;
+  }
+  .slide.active {
+    opacity: 1;
+    visibility: visible;
+    transform: none;
+    pointer-events: auto;
+  }
+
+  /* Keyed off the DECK, not the viewport. #deck is letterboxed to 16:9 — height
+     min(100vh, 100vw*9/16) — so on any viewport taller than 9:16 (a 16:10 laptop, for one) vmin is
+     the viewport's height while the box is shorter, and every em ran ~11% too large for its
+     container. That is what sliced the kicker off the top of slide 2 and cut the LIVE NOW card off
+     the bottom at 1280x800. This expression equals the old one at exactly 16:9 and shrinks with the
+     box everywhere else. Plain calc/min, so no engine this box cannot test is being relied on. */
+  .deck-scope { font-size: calc(min(100vh, 100vw * 9 / 16) * 0.016); }
+
+  .kicker {
+    font-size: 1.45em;
+    letter-spacing: .26em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 600;
+    margin-bottom: 1.5em;
+  }
+  .kicker .num { color: var(--ink-3); }
+
+  h1 { font-size: 5.6em; line-height: 1.04; font-weight: 700; letter-spacing: -0.02em; }
+  h2 { font-size: 3.55em; line-height: 1.08; font-weight: 700; letter-spacing: -0.015em; margin-bottom: .9em; }
+  .lede { font-size: 1.9em; line-height: 1.4; color: var(--ink-2); max-width: 30ch; font-weight: 400; }
+
+  .accent { color: var(--accent); }
+  .good   { color: var(--good); }
+  .soft   { color: var(--ink-2); }
+  .dim    { color: var(--ink-3); }
+
+  /* ===== Title slide ===== */
+  .title-slide { justify-content: center; }
+  .title-slide h1 { max-width: 17ch; }
+  .title-mark {
+    display: inline-flex; align-items: center; gap: .7em;
+    margin-bottom: 2.4em;
+  }
+  .glyph {
+    width: 2.6em; height: 2.6em;
+    border-radius: 16%;
+    background: linear-gradient(150deg, var(--accent), #d2531c);
+    display: grid; place-items: center;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.06), 0 18px 50px rgba(255,122,60,.22);
+    font-size: 1.5em;
+  }
+  .glyph svg { width: 58%; height: 58%; }
+  .title-mark .wm { font-size: 1.5em; letter-spacing:.24em; text-transform:uppercase; color: var(--ink-3); font-weight:600; }
+  .title-sub {
+    margin-top: 2em;
+    font-size: 1.55em;
+    color: var(--ink-2);
+    display:flex; gap: 1.4em; flex-wrap:wrap;
+  }
+  .title-sub span { display:inline-flex; align-items:center; gap:.55em; }
+  .dot { width:.5em; height:.5em; border-radius:50%; background: var(--accent); }
+
+  /* ===== Ladder (L0/L1/L2/L3) ===== */
+  .ladder { display:flex; flex-direction:column; gap: .85em; margin-top: .4em; }
+  .rung {
+    display:grid;
+    grid-template-columns: 4.6em 1fr;
+    align-items:center;
+    gap: 1.6em;
+    padding: 1.1em 1.5em;
+    border-radius: 14px;
+    border: 1px solid var(--line-soft);
+    background: linear-gradient(180deg, var(--panel), var(--bg-2));
+  }
+  .rung.l2 {
+    border-color: rgba(255,122,60,.4);
+    background: linear-gradient(180deg, rgba(255,122,60,.07), rgba(255,122,60,.02));
+  }
+  .rung.l3 {
+    border-color: var(--accent);
+    background: linear-gradient(180deg, rgba(255,122,60,.14), rgba(255,122,60,.04));
+    box-shadow: 0 0 0 1px rgba(255,122,60,.22), 0 24px 60px -28px rgba(255,122,60,.45);
+  }
+  .rung .lvl {
+    font-family: var(--mono);
+    font-size: 2.3em;
+    font-weight: 700;
+    color: var(--ink-3);
+    text-align:center;
+  }
+  .rung.l2 .lvl { color: var(--accent-2); }
+  .rung.l3 .lvl { color: var(--accent); }
+  .rung .body .flow { font-size: 1.75em; font-weight:600; line-height:1.15; }
+  .rung .body .flow .arr { color: var(--accent); margin: 0 .3em; }
+  .rung.l3 .body .flow { color: var(--ink); }
+  .rung:not(.l3) .body .flow { color: var(--ink-2); }
+  .rung .body .gloss { font-size: 1.3em; color: var(--ink-3); margin-top:.25em; }
+  .rung.l3 .body .gloss { color: var(--accent-2); }
+
+  /* ===== What changes at L2 — aligned property list ===== */
+  .shift { display:grid; grid-template-columns: max-content 1fr; column-gap: 1.6em; row-gap: 1.15em; align-items:baseline; margin-top:.3em; max-width: 64ch; }
+  .shift .v { white-space:nowrap; }
+  .shift .k { font-size: 1.95em; font-weight:700; color:var(--ink); white-space:nowrap; position:relative; padding-left:1.05em; }
+  .shift .k::before { content:""; position:absolute; left:0; top:.52em; width:.46em; height:.46em; border-radius:50%; background:var(--accent); }
+  .shift .v { font-size: 1.55em; color:var(--ink-3); line-height:1.25; }
+  .split { display:grid; grid-template-columns: max-content 1fr; column-gap: 4.5em; align-items:center; margin-top:.4em; }
+  .split .punch { font-size: 2.45em; line-height:1.28; font-weight:600; color:var(--ink); max-width:15ch; border-left:2px solid var(--line); padding-left:1em; }
+  .split .punch .accent { color:var(--accent); }
+
+  /* ===== Mission Control hero slide ===== */
+  .mc-slide { justify-content:center; }
+  .mc-hero {
+    display:grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 3em;
+    align-items: center;
+    margin-top: .3em;
+  }
+  .mc-left {}
+  .mc-left .big-stat {
+    font-size: 6.5em;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    color: var(--accent);
+    line-height: 1;
+  }
+  .mc-left .big-stat-label {
+    font-size: 1.55em;
+    color: var(--ink-3);
+    margin-top: .4em;
+  }
+  .mc-right { display:flex; flex-direction:column; gap:1em; }
+  .mc-card {
+    border:1px solid var(--line-soft);
+    border-radius: 12px;
+    background: linear-gradient(180deg, var(--panel), var(--bg-2));
+    padding: 1em 1.4em;
+    font-size: 1.45em;
+    color: var(--ink-2);
+    line-height: 1.35;
+  }
+  .mc-card .mc-label {
+    font-size: .8em;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    font-weight: 600;
+    margin-bottom: .35em;
+  }
+  .mc-card strong { color: var(--ink); }
+  .mc-shot { margin:0; }
+  .mc-shot img {
+    display:block;
+    width:88%;
+    margin:0 auto;
+    border:1px solid var(--line);
+    border-radius:14px;
+    box-shadow: 0 18px 60px rgba(0,0,0,.55), 0 0 0 1px rgba(255,122,60,.08);
+  }
+  .mc-shot figcaption {
+    margin-top:.7em;
+    font-size:1.1em;
+    color:var(--ink-3);
+    line-height:1.45;
+    text-align:center;
+    max-width:46ch;
+    margin-left:auto;
+    margin-right:auto;
+  }
+
+  /* ===== ROI slide ===== */
+  .roi-table { display:grid; grid-template-columns: 1fr auto; gap:.6em 2em; align-items:baseline; margin-top:.6em; max-width:56ch; }
+  .roi-table .label { font-size:1.7em; color:var(--ink-2); }
+  .roi-table .val   { font-size:1.7em; font-weight:700; color:var(--ink); font-family:var(--mono); white-space:nowrap; text-align:right; }
+  .roi-table .divider { grid-column:1/-1; height:1px; background:var(--line-soft); margin:.3em 0; }
+  .roi-table .label.hero { color:var(--ink); font-weight:700; font-size:1.85em; }
+  .roi-table .val.hero   { color:var(--accent); font-size:2.2em; }
+  .roi-note { margin-top:1em; font-size:1.3em; color:var(--ink-3); max-width:58ch; line-height:1.4; }
+
+  /* ===== Timeline (journey) ===== */
+  .timeline { position:relative; margin-top:1em; }
+  .tl-row {
+    display:grid;
+    grid-template-columns: 2.4em 1fr;
+    gap: 1.4em;
+    padding-bottom: 1.15em;
+  }
+  .tl-row:last-child { padding-bottom:0; }
+  .tl-rail { position:relative; display:flex; flex-direction:column; align-items:center; }
+  .tl-node {
+    width: 1.5em; height: 1.5em; border-radius:50%;
+    border:2px solid var(--line); background: var(--bg-2);
+    z-index:2; flex:none; margin-top:.2em;
+  }
+  .tl-row.now .tl-node { border-color: var(--accent); background: var(--accent); box-shadow:0 0 0 6px rgba(255,122,60,.16); }
+  .tl-line { width:2px; flex:1; background: var(--line-soft); margin-top:.2em; }
+  .tl-row:last-child .tl-line { display:none; }
+  .tl-body .step { font-size: 1.95em; font-weight:650; line-height:1.12; }
+  .tl-row.now .tl-body .step { color: var(--accent); }
+  .tl-body .note { font-size: 1.32em; color: var(--ink-3); margin-top:.2em; max-width: 52ch; }
+
+  /* ===== Control plane (3 stacked components) ===== */
+  .stack { display:flex; flex-direction:column; gap:1.1em; margin-top:.3em; }
+  .comp {
+    display:grid; grid-template-columns: auto 1fr; align-items:center; gap:1.5em;
+    border:1px solid var(--line); border-radius:14px;
+    background: linear-gradient(180deg, var(--panel), var(--bg-2));
+    padding: 1.25em 1.6em;
+  }
+  .comp .ico { width:2.6em; height:2.6em; border-radius:12px; background: var(--panel-2); border:1px solid var(--line); display:grid; place-items:center; color:var(--accent); }
+  .comp .ico svg { width:1.5em; height:1.5em; }
+  .comp .name { font-size: 2em; font-weight:700; }
+  .comp .name .role { color: var(--accent); font-size:.62em; font-weight:600; letter-spacing:.12em; text-transform:uppercase; margin-left:.7em; }
+  .comp .desc { font-size: 1.42em; color: var(--ink-2); margin-top:.2em; max-width: 56ch; }
+
+  /* ===== Why not just (comparisons) ===== */
+  .cmp { display:flex; flex-direction:column; gap:1.4em; margin-top:.3em; }
+  .cmp-block .q { font-size: 1.85em; font-weight:700; color:var(--ink); margin-bottom:.6em; }
+  .cmp-block .q::before { content:"\201C"; color:var(--accent); }
+  .cmp-block .q::after { content:"\201D"; color:var(--accent); }
+  .vs { display:grid; grid-template-columns: 1fr auto 1fr; align-items:stretch; gap:1.1em; }
+  .vs .side { border:1px solid var(--line-soft); border-radius:12px; padding:1em 1.3em; font-size:1.5em; line-height:1.3; }
+  .vs .side.bad { background: var(--bg-2); color: var(--ink-3); }
+  .vs .side.good { background: linear-gradient(180deg, rgba(255,122,60,.10), rgba(255,122,60,.02)); border-color: var(--accent); color: var(--ink); }
+  .vs .side .tag { display:block; font-size:.62em; letter-spacing:.14em; text-transform:uppercase; margin-bottom:.4em; }
+  .vs .side.bad .tag { color: var(--ink-3); }
+  .vs .side.good .tag { color: var(--accent); }
+  .vs .mid { display:grid; place-items:center; color:var(--ink-3); font-size:1.4em; font-weight:700; }
+
+  /* ===== Principles (grid) ===== */
+  .principles { display:grid; grid-template-columns: repeat(3, 1fr); gap: .85em; margin-top:.2em; }
+  .pr {
+    border:1px solid var(--line-soft); border-radius:11px;
+    background: var(--panel);
+    padding: 1em 1.15em;
+  }
+  .pr .t { font-size: 1.45em; font-weight:700; line-height:1.15; }
+  .pr .d { font-size: 1.12em; color: var(--ink-3); margin-top:.35em; line-height:1.3; }
+  .pr.spark { border-color: var(--accent); background: linear-gradient(180deg, rgba(255,122,60,.10), rgba(255,122,60,.02)); }
+  .pr.spark .t { color: var(--accent); }
+
+  /* ===== Proof / facts grid ===== */
+  .facts { display:grid; grid-template-columns: repeat(3,1fr); gap:.85em; margin-top:.6em; }
+  .fact {
+    border:1px solid var(--line-soft); border-radius:12px;
+    background: var(--panel);
+    padding: 1em 1.2em;
+  }
+  .fact .num { font-size: 2.8em; font-weight:800; color:var(--accent); letter-spacing:-0.02em; line-height:1; }
+  .fact .sub { font-size: 1.2em; color:var(--ink-3); margin-top:.3em; line-height:1.3; }
+  .fact.wide { grid-column: span 2; }
+  .fact.wide .num { font-size:2.2em; }
+
+  /* ===== Live demo slide ===== */
+  .live-slide { align-items:center; text-align:center; justify-content:center; }
+  .live-badge {
+    display:inline-flex; align-items:center; gap:.8em;
+    font-size: 2.1em; letter-spacing:.22em; text-transform:uppercase; font-weight:700;
+    color:var(--accent);
+    border:1px solid var(--accent); border-radius:999px;
+    padding:.55em 1.4em;
+    margin-bottom: 1.1em;
+  }
+  .live-dot { width:.8em; height:.8em; border-radius:50%; background:var(--accent); animation: pulse 1.6s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1; transform:scale(1);} 50%{opacity:.35; transform:scale(.7);} }
+  .live-slide h2 { margin-bottom:.4em; }
+  .live-slide .lede { margin: 0 auto; text-align:center; max-width: 34ch; }
+  .live-flow { margin-top:1.8em; font-size:1.55em; color:var(--ink-3); font-family:var(--mono); letter-spacing:.04em; }
+  .live-flow b { color:var(--ink-2); font-weight:600; }
+  .live-flow .arr { color: var(--accent); margin:0 .5em; }
+
+  /* ===== Embedded universe (the live 3D ops world) ===== */
+  .universe-slide { align-items:center; justify-content:center; text-align:center; padding:4% 5%; }
+  .universe-slide h2 { margin-bottom:.25em; }
+  .universe-frame {
+    width:100%;
+    flex:1 1 auto;
+    min-height:0;
+    margin-top:1em;
+    border:1px solid var(--line);
+    border-radius:14px;
+    overflow:hidden;
+    background:#070b11;
+    box-shadow: 0 18px 60px rgba(0,0,0,.55), 0 0 0 1px rgba(255,122,60,.08);
+  }
+  .universe-frame iframe { display:block; width:100%; height:100%; border:0; }
+  .universe-cap {
+    margin-top:.9em;
+    font-size:1.2em;
+    color:var(--ink-3);
+    line-height:1.4;
+  }
+  .universe-cap .accent { color:var(--accent); font-weight:600; }
+
+  /* ===== Artifacts (what it produced) ===== */
+  .artifacts { display:grid; grid-template-columns: repeat(3,1fr); gap:.9em; margin-top:.2em; }
+  .art {
+    border:1px solid var(--line-soft); border-radius:12px; background:var(--panel);
+    padding:1.1em 1.25em;
+  }
+  .art .lbl { font-size:1.5em; font-weight:650; }
+  .art .sub { font-size:1.1em; color:var(--ink-3); margin-top:.25em; }
+  .pull {
+    margin-top:1.6em; font-size:1.75em; line-height:1.35; color:var(--ink-2);
+    border-left:3px solid var(--accent); padding-left:1em; max-width: 48ch;
+  }
+  .pull em { color:var(--accent); font-style:normal; }
+
+  /* ===== Generic bullet list ===== */
+  ul.bul { list-style:none; display:flex; flex-direction:column; gap:.92em; margin-top:.3em; max-width: 54ch; }
+  ul.bul li { position:relative; padding-left:1.7em; font-size:1.72em; line-height:1.3; color:var(--ink); }
+  ul.bul li::before { content:""; position:absolute; left:0; top:.55em; width:.65em; height:.65em; border-radius:2px; background:var(--accent); }
+  ul.bul li .sub { display:block; font-size:.66em; color:var(--ink-3); margin-top:.1em; font-weight:400; }
+  ul.bul.cols2 { display:grid; grid-template-columns:1fr 1fr; column-gap:3.2em; row-gap:1.1em; max-width:none; }
+  ul.bul.cols3 { display:grid; grid-template-columns:repeat(3,1fr); column-gap:2.6em; row-gap:0; max-width:none; }
+  ul.bul.cols3 li { font-size:1.6em; }
+
+  /* ===== Takeaway / closing ===== */
+  .closing { justify-content:center; }
+  .closing .big {
+    font-size: 4.2em; line-height:1.12; font-weight:700; letter-spacing:-0.02em; max-width: 20ch;
+  }
+  .closing .big .accent { color:var(--accent); }
+  .closing .three { margin-top:1.9em; display:grid; grid-template-columns:repeat(3,1fr); align-items:start; }
+  .closing .three > span { font-size:1.4em; color:var(--ink-2); line-height:1.35; padding:0 1.6em; border-left:1px solid var(--line); }
+  .closing .three > span:first-child { padding-left:0; border-left:none; }
+  .closing .three .accent { color:var(--accent); }
+  .thanks { margin-top:2.2em; font-size:1.7em; color:var(--ink-2); letter-spacing:.02em; }
+  .closing-final { justify-content:center; }
+  .closing-final .thanks-big { font-size: 7em; letter-spacing:-0.03em; }
+  .closing-final .lede { max-width: 34ch; }
+
+  /* ===== Chrome: progress bar + counter + hint ===== */
+  #progress {
+    position: fixed; top:0; left:0; height:3px;
+    background: linear-gradient(90deg, var(--accent), var(--accent-2));
+    width:0; z-index:50; transition: width .42s ease;
+    box-shadow:0 0 12px rgba(255,122,60,.5);
+  }
+  #counter {
+    position: fixed; bottom: 22px; right: 26px;
+    font-family: var(--mono); font-size: 14px; letter-spacing:.08em;
+    color: var(--ink-3); z-index:50; user-select:none;
+  }
+  #counter .cur { color: var(--ink); }
+  #hint {
+    position: fixed; bottom: 22px; left: 26px;
+    font-size: 12.5px; letter-spacing:.06em; color: var(--ink-3); z-index:50;
+    user-select:none; transition: opacity .6s ease; opacity:.85;
+  }
+  #hint kbd {
+    font-family: var(--mono); border:1px solid var(--line); border-radius:5px;
+    padding:1px 6px; color: var(--ink-2); background: var(--panel); margin:0 1px;
+  }
+  body.touch #hint { display:none; }
+  @media (max-width: 720px) {
+    #hint { display:none; }
+    #counter { bottom:14px; right:16px; }
+    #deck { width:100vw; height:100vh; height:100dvh; }
+    .deck-scope { font-size: 2.4vmin; }
+
+    /* A multi-column list at 390px wide is three hairlines of unreadable type. These were the
+       only grid classes the phone query never overrode, so the CTA and principle slides kept
+       their desktop columns on a phone. Charter says mobile-first; this is that, applied. */
+    ul.bul.cols2, ul.bul.cols3 { display:block; }
+    ul.bul.cols3 li, ul.bul.cols2 li { font-size:1.5em; }
+    /* nowrap belongs to a wide canvas: on a phone it pushed the value off the right edge with no
+       way to reach it, and pinch-zoom is disabled, so the text was simply gone. */
+    .shift { grid-template-columns: 1fr; row-gap:.5em; }
+    .shift .v { white-space:normal; }
+
+    /* ---- Slide 2: Mission Control hero — stack to single column ---- */
+    .mc-slide {
+      justify-content: flex-start;
+      overflow-y: auto;
+    }
+    .mc-hero {
+      grid-template-columns: 1fr;
+      gap: 1.2em;
+    }
+    .mc-left .big-stat {
+      font-size: 4em;
+    }
+    .mc-left .big-stat-label {
+      font-size: 1.3em;
+    }
+    /* Compress the lede inside mc-left so it fits */
+    .mc-left .lede {
+      font-size: 1.3em !important;
+      max-width: none !important;
+      margin-top: .7em !important;
+    }
+    .mc-right {
+      gap: .7em;
+    }
+    .mc-card {
+      font-size: 1.25em;
+      padding: .8em 1em;
+    }
+    .mc-shot img { width: 100%; }
+    .mc-shot figcaption { font-size: 1.05em; }
+
+    /* ---- Slides 6 & 11: principles 3-col → 2-col ---- */
+    .principles {
+      grid-template-columns: repeat(2, 1fr);
+      gap: .7em;
+    }
+
+    /* ---- Universe slide: give the live world the full phone canvas ---- */
+    .universe-slide { padding: 3% 3.5%; }
+    .universe-slide h2 { font-size: 2.2em; }
+    .universe-frame { margin-top: .7em; }
+    .universe-cap { font-size: 1.15em; margin-top: .6em; }
+
+    /* ---- Slide 10: ROI — stack the big stat below the table ---- */
+    .roi-two-col {
+      grid-template-columns: 1fr !important;
+    }
+    .roi-two-col .roi-stat-col {
+      border-left: none !important;
+      border-top: 1px solid var(--line);
+      padding-left: 0 !important;
+      padding-top: 1em;
+      margin-top: .5em;
+    }
+
+    /* ---- Slide 9: Proof facts — 3-col → 2-col ---- */
+    .facts {
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .fact.wide {
+      grid-column: span 2;
+    }
+
+    /* ---- Slide 16: closing — shrink headline so .three fits below ---- */
+    .closing .big {
+      font-size: 2.8em;
+      max-width: none;
+    }
+
+    /* ---- Slides 16 & 4: closing .three / .split — stack vertically ---- */
+    .closing .three {
+      grid-template-columns: 1fr;
+      gap: .7em;
+      margin-top: 1em;
+    }
+    .closing .three > span {
+      font-size: 1.2em;
+      padding: .5em 0 .5em .9em;
+      border-left: 1px solid var(--line);
+    }
+    .closing .three > span:first-child {
+      padding-left: .9em;
+      border-left: 1px solid var(--line);
+    }
+    .split {
+      grid-template-columns: 1fr;
+      gap: 1.2em;
+    }
+    .split .punch {
+      font-size: 1.75em;
+      border-left: none;
+      padding-left: 0;
+      border-top: 2px solid var(--line);
+      padding-top: .7em;
+      max-width: none;
+    }
+  }
+</style>
+</head>
+<body>
+<div id="progress"></div>
+<div id="stage">
+  <div id="deck" class="deck-scope">
+
+    <!-- 1 — Title -->
+    <section class="slide title-slide active">
+      <div class="title-mark">
+        <span class="glyph" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#1a0e07" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <circle cx="5" cy="5" r="2"/>
+            <circle cx="19" cy="5" r="2"/>
+            <circle cx="5" cy="19" r="2"/>
+            <circle cx="19" cy="19" r="2"/>
+            <path d="M9.5 9.5 6.3 6.3M14.5 9.5l3.2-3.2M9.5 14.5l-3.2 3.2M14.5 14.5l3.2 3.2"/>
+          </svg>
+        </span>
+        <span class="wm">Knowledge share &middot; field notes</span>
+      </div>
+      <h1>A system that builds systems<span class="dim"> —</span><br><span class="accent">steered from your pocket.</span></h1>
+      <div class="title-sub">
+        <span><span class="dot"></span> One operator</span>
+        <span><span class="dot"></span> A multi-function org</span>
+        <span><span class="dot"></span> Run async, from a phone</span>
+      </div>
+    </section>
+
+    <!-- 2 — Mission Control: the hook -->
+    <section class="slide mc-slide">
+      <div class="kicker"><span class="num">00</span> &nbsp;The unexpected thing</div>
+      <h2>The AI built its own ops tool.</h2>
+      <div class="mc-hero">
+        <div class="mc-left">
+          <div class="big-stat">Mission<br>Control</div>
+          <div class="big-stat-label">A live, two-way ops dashboard —<br>built by the coordinator, for itself.</div>
+          <p class="lede" style="margin-top:1.1em;font-size:1.4em;max-width:27ch;">It didn't wait to be asked: when the build needed a tracking surface, <strong style="color:var(--ink);">it built one</strong> — then ran its own security-hardening pass (token gate, localhost-only bind, strict input validation, SSE cap) and shipped it. <strong style="color:var(--ink);">One day.</strong></p>
+          <div class="mc-card" style="margin-top:1em;border-color:var(--accent);background:linear-gradient(180deg,rgba(255,122,60,.10),rgba(255,122,60,.02));">
+            <div class="mc-label">Live now — real-time, two-way</div>
+            Coordinator writes state &rarr; the board moves in ~1&nbsp;s via SSE. You check off an item &rarr; the coordinator sees it. Open questions deeplink to Telegram. Next (v2.5): auto-pull from the tracker.
+          </div>
+        </div>
+        <div class="mc-right">
+          <figure class="mc-shot">
+            <img src="assets/mission-control-sanitized.webp" alt="Mission Control — the live two-way ops dashboard the coordinator built: pipeline stages, owner-split blockers, check-offs, the delegated org" />
+            <figcaption>The real board, running today &mdash; contents sanitized for this public deck. The live one carries the actual company pipeline &amp; blockers, on a private tailnet URL.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3 — Four levels of leverage (L3 added) -->
+    <section class="slide">
+      <div class="kicker"><span class="num">01</span> &nbsp;The mental model</div>
+      <h2>Four levels of leverage</h2>
+      <div class="ladder">
+        <div class="rung l0">
+          <div class="lvl">L0</div>
+          <div class="body">
+            <div class="flow">Prompt <span class="arr">&rarr;</span> output</div>
+            <div class="gloss">You are in the loop for everything. You are still the CPU.</div>
+          </div>
+        </div>
+        <div class="rung l1">
+          <div class="lvl">L1</div>
+          <div class="body">
+            <div class="flow">Agent <span class="arr">&rarr;</span> whole task</div>
+            <div class="gloss">You hand off a task, you review the result. One at a time.</div>
+          </div>
+        </div>
+        <div class="rung l2">
+          <div class="lvl">L2</div>
+          <div class="body">
+            <div class="flow">System <span class="arr">&rarr;</span> whole domain</div>
+            <div class="gloss">You build the builder once. Coordinator + specialists + compounding memory. Doer &rarr; architect.</div>
+          </div>
+        </div>
+        <div class="rung l3">
+          <div class="lvl">L3</div>
+          <div class="body">
+            <div class="flow">System <span class="arr">&rarr;</span> builds tools to run itself</div>
+            <div class="gloss">The system surfaces its own operational needs and builds for them. That's Mission Control.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4 — What changes at L2/L3 -->
+    <section class="slide">
+      <div class="kicker"><span class="num">02</span> &nbsp;The leverage shift</div>
+      <h2>What changes at L2</h2>
+      <div class="split">
+        <div class="shift">
+          <div class="k">Parallel</div><div class="v">many agents at once</div>
+          <div class="k">Persistent</div><div class="v">restarts are lossless</div>
+          <div class="k">Async</div><div class="v">work happens without you</div>
+          <div class="k">Partitioned</div><div class="v">each agent holds its own context</div>
+          <div class="k">Pocket</div><div class="v">a phone is enough to steer it</div>
+        </div>
+        <p class="punch">You stop being the person who does the tasks — and become the person who <span class="accent">designs the system that does them.</span></p>
+      </div>
+    </section>
+
+    <!-- 5 — The honest journey -->
+    <section class="slide">
+      <div class="kicker"><span class="num">03</span> &nbsp;How this arrived here</div>
+      <h2>The climb</h2>
+      <div class="timeline">
+        <div class="tl-row">
+          <div class="tl-rail"><div class="tl-node"></div><div class="tl-line"></div></div>
+          <div class="tl-body"><div class="step">Chats &amp; research</div><div class="note">A smarter search / thought partner. Useful — but disposable. No compounding.</div></div>
+        </div>
+        <div class="tl-row">
+          <div class="tl-rail"><div class="tl-node"></div><div class="tl-line"></div></div>
+          <div class="tl-body"><div class="step">Coding sessions</div><div class="note">First taste of "it did a whole thing" — and of doing it badly. Output ceiling = brief quality.</div></div>
+        </div>
+        <div class="tl-row">
+          <div class="tl-rail"><div class="tl-node"></div><div class="tl-line"></div></div>
+          <div class="tl-body"><div class="step">"Get it done" era</div><div class="note">Single agent, task-at-a-time, ever-longer prompts. Faster — but the human stayed the bottleneck.</div></div>
+        </div>
+        <div class="tl-row">
+          <div class="tl-rail"><div class="tl-node"></div><div class="tl-line"></div></div>
+          <div class="tl-body"><div class="step">Agentic loops</div><div class="note">The agent runs, hits a decision, pings the operator, continues. Closer — but one thread, context filling fast.</div></div>
+        </div>
+        <div class="tl-row now">
+          <div class="tl-rail"><div class="tl-node"></div></div>
+          <div class="tl-body"><div class="step">Coordinator + specialists + Mission Control</div><div class="note">Each specialist has a charter, its own context, its own memory. The system builds its own ops surface. Only the irreducible needs approving.</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 6 — Built on the Claude Code harness -->
+    <section class="slide">
+      <div class="kicker"><span class="num">04</span> &nbsp;Not a metaphor &mdash; native primitives</div>
+      <h2>Built on the Claude Code harness</h2>
+      <div class="principles">
+        <div class="pr"><div class="t">Subagents</div><div class="d">Your specialists &mdash; planner / builder / reviewer + the functions. Real, dispatched.</div></div>
+        <div class="pr"><div class="t">Skills</div><div class="d">The capabilities &mdash; bootstrap · adopt · preview. Auto-invoked from a brief.</div></div>
+        <div class="pr"><div class="t">CLAUDE.md</div><div class="d">The coordinator's charter &mdash; loaded every session.</div></div>
+        <div class="pr"><div class="t">Persistent memory</div><div class="d">Durable facts that compound across sessions.</div></div>
+        <div class="pr spark"><div class="t">Mission Control</div><div class="d">Real-time, two-way, security-hardened ops surface — built, hardened, and maintained by the coordinator. SSE updates in ~1&thinsp;s; you check off an item and it sees it.</div></div>
+        <div class="pr spark"><div class="t">The control plane</div><div class="d">Telegram relay + Tailscale mesh &mdash; steer it from your pocket.</div></div>
+      </div>
+      <p class="lede" style="margin-top:1.2em;max-width:52ch;">No framework to learn &mdash; <span class="accent">you already have the runtime.</span></p>
+    </section>
+
+    <!-- 7 — The control plane -->
+    <section class="slide">
+      <div class="kicker"><span class="num">05</span> &nbsp;The plumbing</div>
+      <h2>The control plane</h2>
+      <div class="stack">
+        <div class="comp">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 4 3 11l6 2 2 6 4-5"/><path d="M9 13 21 4"/></svg></div>
+          <div>
+            <div class="name">Telegram <span class="role">relay</span></div>
+            <div class="desc">Async from the human side. Agent pings the phone &rarr; a one-sentence reply &rarr; it continues. Works on any network; sends files readable in-app.</div>
+          </div>
+        </div>
+        <div class="comp">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.7 7.6 11 16M16.3 7.6 13 16M8 6h8"/></svg></div>
+          <div>
+            <div class="name">Tailscale <span class="role">mesh</span></div>
+            <div class="desc">WireGuard mesh VPN. Mac, phone, cloud worker on one private network — no ports exposed. Mission Control lives here, at a private URL opened from the phone.</div>
+          </div>
+        </div>
+        <div class="comp">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg></div>
+          <div>
+            <div class="name">SSH <span class="role">fallback</span></div>
+            <div class="desc">A real terminal into the same mesh, on iOS, for when a log or a shell is needed. The escape hatch — not the primary interface.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 8 — Live demo -->
+    <section class="slide live-slide">
+      <div class="live-badge"><span class="live-dot"></span> Live</div>
+      <h2>Vision &rarr; a running MVP</h2>
+      <p class="lede">A one-line idea never built before &mdash; spun up live from the kickoff repo. One brief: the <span class="accent">bootstrap skill</span> proposes a stack, scaffolds it fresh, runs a test &mdash; then a link to open it on your phone. All watched from a phone.</p>
+      <div class="live-flow"><b>brief</b><span class="arr">&rarr;</span><b>scaffold</b><span class="arr">&rarr;</span><b>test</b><span class="arr">&rarr;</span><b>steer</b><span class="arr">&rarr;</span><b>preview link</b></div>
+    </section>
+
+    <!-- 8b — The live ops universe (embedded, interactive) -->
+    <section class="slide universe-slide">
+      <div class="live-badge"><span class="live-dot"></span> Interactive demo</div>
+      <h2>Mission Control &mdash; the org, in space</h2>
+      <div class="universe-frame">
+        <iframe src="universe-kickoff.html" title="Mission Control — interactive 3D ops universe (demo)"
+                loading="lazy" allow="fullscreen"></iframe>
+      </div>
+      <p class="universe-cap">Interactive demo &middot; illustrative data &mdash; hit <span class="accent">&#9654;</span> to watch it build &middot; drag to fly through it.</p>
+    </section>
+
+    <!-- 9 — The proof: Bliz -->
+    <section class="slide">
+      <div class="kicker"><span class="num">06</span> &nbsp;The proof case — what this method produced</div>
+      <h2>Bliz — built this way, solo</h2>
+      <p class="lede" style="max-width:55ch;margin-bottom:1em;">Non-custodial B2B payments for cross-border invoicing, settled in stablecoins. A full-stack fintech product — the kind that normally needs 3&ndash;4 engineers. Live at <a href="https://www.bliz.io" target="_blank" rel="noopener" class="accent" style="text-decoration:underline;text-underline-offset:3px;">www.bliz.io</a>.</p>
+      <div class="facts">
+        <div class="fact"><div class="num">175k</div><div class="sub">lines of Rust — 12-crate workspace (+209k TS/TSX)</div></div>
+        <div class="fact"><div class="num">87</div><div class="sub">database migrations</div></div>
+        <div class="fact"><div class="num">2,411</div><div class="sub">commits over ~11 months</div></div>
+        <div class="fact wide"><div class="num">Chain-agnostic</div><div class="sub">EVM, Solana &amp; Bitcoin live — new chains added on demand. Non-custodial, with sponsored transfers (EIP-3009 + Solana fee-payer)</div></div>
+        <div class="fact"><div class="num">1 person</div><div class="sub">Backend, mobile, checkout, design system, infra, comms</div></div>
+      </div>
+    </section>
+
+    <!-- 10 — ROI -->
+    <section class="slide">
+      <div class="kicker"><span class="num">07</span> &nbsp;What it cost vs. what it would have cost</div>
+      <h2>The ROI math</h2>
+      <div class="roi-two-col" style="display:grid;grid-template-columns:1fr auto;gap:2em;align-items:start;margin-top:.3em;">
+        <div>
+          <div class="roi-table">
+            <div class="label">Comparable team (3.5 FTE &times; 7 months)</div><div class="val">~$327k</div>
+            <div class="label">Actual labour (1 engineer + AI orchestration)</div><div class="val">~$93k</div>
+            <div class="label">AI + tooling over the period</div><div class="val">~$1.4k</div>
+            <div class="divider"></div>
+            <div class="label hero">Net saved on this single build</div><div class="val hero">~$232k</div>
+          </div>
+          <div class="roi-note">Conservative inputs: $160k/yr fully-loaded FTE, 7-month duration, 3.5-person realistic team. <span class="accent">The AI/tooling line is rounding error against one salary.</span></div>
+          <div class="roi-note" style="margin-top:.6em;">Add Mission Control: a continuously-maintained ops surface a product-ops hire would take weeks to build — maintained at zero marginal cost.</div>
+        </div>
+        <div class="roi-stat-col" style="text-align:center;padding-left:2em;border-left:1px solid var(--line);">
+          <div style="font-size:7em;font-weight:800;color:var(--accent);letter-spacing:-0.03em;line-height:1;">3.4&times;</div>
+          <div style="font-size:1.5em;color:var(--ink-3);margin-top:.3em;">labour-cost multiplier<br>on this one build</div>
+          <div style="font-size:1.2em;color:var(--ink-3);margin-top:1em;line-height:1.4;">Built part-time &mdash;<br>a <strong style="color:var(--ink);">headcount claim</strong>,<br>not a wall-clock claim.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 11 — The principles that survived -->
+    <section class="slide">
+      <div class="kicker"><span class="num">08</span> &nbsp;What keeps proving itself</div>
+      <h2>What stuck</h2>
+      <div class="principles">
+        <div class="pr spark"><div class="t">Coordinator + specialists</div><div class="d">Orchestrate, don't do the domain work. Each has a charter.</div></div>
+        <div class="pr"><div class="t">Context is the scarce resource</div><div class="d">Delegate to protect it. Keep domain knowledge at the edge.</div></div>
+        <div class="pr"><div class="t">Minimise the operator's plate</div><div class="d">Decide-and-run the reversible. Surface only the irreducible — values, outside-world, one-way doors.</div></div>
+        <div class="pr"><div class="t">Trust = boundaries</div><div class="d">Automate only what you can fully recover from. It commits and pushes behind local gates; it stops at spend and destruction.</div></div>
+        <div class="pr spark"><div class="t">Persistent memory</div><div class="d">Sessions still degrade — memory is what makes restarting them lossless. Session 40 re-grounds from files, not recall.</div></div>
+        <div class="pr spark"><div class="t">The system builds its tools</div><div class="d">When Mission Control emerged, it wasn't planned — the system surfaced the need, built it, hardened it, and now maintains it. Real-time, two-way, running today.</div></div>
+      </div>
+    </section>
+
+    <!-- 12 — How it stays honest -->
+    <section class="slide">
+      <div class="kicker"><span class="num">09</span> &nbsp;&ldquo;Does it just hallucinate code?&rdquo;</div>
+      <h2>The quality bar</h2>
+      <p class="lede" style="max-width:55ch; margin-bottom:1em;">Quality is structural, not a vibe. The reason it isn't just confident hallucination &mdash; <span class="accent">every build has to clear this bar</span>:</p>
+      <ul class="bul cols2">
+        <li>A runnable proof, GREEN <span class="sub">The success criterion is a test that runs &mdash; not a description.</span></li>
+        <li>Actually run <span class="sub">Never &ldquo;done&rdquo; on an unrun build. Paste the real result.</span></li>
+        <li>An independent reviewer <span class="sub">Runs it itself, reads the diff. No rubber-stamp.</span></li>
+        <li>Look at it <span class="sub">Anything visual gets rendered and eyeballed &mdash; never code-only.</span></li>
+        <li>No spin <span class="sub">A red is reported as a red. You decide on what's true.</span></li>
+        <li>Honest limits <span class="sub">The README leads with what it does <em>and doesn't</em>. Multiplies a builder; doesn't replace one.</span></li>
+      </ul>
+    </section>
+
+    <!-- 13 — Idea &rarr; MVP &rarr; scaling -->
+    <section class="slide">
+      <div class="kicker"><span class="num">10</span> &nbsp;It grows with your product</div>
+      <h2>Idea &rarr; MVP &rarr; scaling</h2>
+      <div class="ladder">
+        <div class="rung l0">
+          <div class="lvl">&#9312;</div>
+          <div class="body">
+            <div class="flow">Idea <span class="arr">&rarr;</span> MVP</div>
+            <div class="gloss">One brief &rarr; a running, tested app. (What you just saw.) ~26s on the zero-dep fast path.</div>
+          </div>
+        </div>
+        <div class="rung l1">
+          <div class="lvl">&#9313;</div>
+          <div class="body">
+            <div class="flow">MVP <span class="arr">&rarr;</span> iterate</div>
+            <div class="gloss">Steer + add &mdash; small, reversible, tested. The app grows.</div>
+          </div>
+        </div>
+        <div class="rung l2">
+          <div class="lvl">&#9314;</div>
+          <div class="body">
+            <div class="flow">iterate <span class="arr">&rarr;</span> scale</div>
+            <div class="gloss">Structure emerges at the right size. Modules &rarr; layers &rarr; surfaces &rarr; a monorepo with boundaries. The org — and its ops tools — grow alongside.</div>
+          </div>
+        </div>
+      </div>
+      <p class="lede" style="margin-top:1em;max-width:60ch;">Real, but not automatic — the system does the building; <span class="accent">you steer and make the calls at every step.</span></p>
+    </section>
+
+    <!-- 14 — What's still hard -->
+    <section class="slide">
+      <div class="kicker"><span class="num">11</span> &nbsp;Honest limitations</div>
+      <h2>What's still hard</h2>
+      <ul class="bul cols3">
+        <li>Context takes discipline <span class="sub">Windows are finite and compact. Recall holds — but only if you keep memory + the tracker current.</span></li>
+        <li>It runs on your machine <span class="sub">A laptop saturates running many agents at once. Hosted workers are the scale answer.</span></li>
+        <li>Judgment stays human <span class="sub">Values, relationships, reading a room — not delegable. Probably for good.</span></li>
+      </ul>
+    </section>
+
+    <!-- 15 — Take it with you (the repo) -->
+    <section class="slide">
+      <div class="kicker"><span class="num">12</span> &nbsp;Spin up your own</div>
+      <h2>Take it with you</h2>
+      <p class="lede" style="max-width:58ch; margin-bottom:1.1em;">Clone it and make it yours. <span class="accent">A one-person AI build-org</span> in a starter kit &mdash; no frozen templates; the bootstrap skill scaffolds fresh from your brief. Two on-ramps:</p>
+      <div class="artifacts" style="grid-template-columns:repeat(2,1fr);">
+        <div class="art"><div class="lbl">bootstrap &mdash; greenfield</div><div class="sub">Propose a stack &rarr; scaffold fresh &rarr; green test. (~26s on the zero-dep fast path.)</div></div>
+        <div class="art"><div class="lbl">adopt &mdash; brownfield</div><div class="sub">Point it at a repo you already have &rarr; it onboards the pattern, additively.</div></div>
+      </div>
+      <p class="pull" style="margin-top:1.3em;">Early still &mdash; but it runs on the principles you just saw. Plenty of room to grow, and you can <span class="accent">use it to improve itself.</span></p>
+      <div class="live-flow" style="margin-top:1em;">github.com/vinceferro/kickoff</div>
+    </section>
+
+    <!-- 16 — Takeaway -->
+    <section class="slide closing">
+      <div class="kicker"><span class="num">13</span> &nbsp;If you take one thing</div>
+      <div class="big">The shift that mattered: stop making tasks faster &mdash; <span class="accent">build the system that builds them.</span><br>That's the leverage that compounds.</div>
+      <div class="three">
+        <span>One engineer. <span class="accent">3.4&times; labour multiplier</span> on a real fintech product.</span>
+        <span>The AI built Mission Control — <span class="accent">its own ops tool.</span></span>
+        <span>It multiplies a builder. <span class="accent">It doesn't replace one.</span></span>
+      </div>
+    </section>
+
+    <!-- 17 — Closing -->
+    <section class="slide title-slide closing-final">
+      <div class="title-mark">
+        <span class="glyph" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#1a0e07" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <circle cx="5" cy="5" r="2"/>
+            <circle cx="19" cy="5" r="2"/>
+            <circle cx="5" cy="19" r="2"/>
+            <circle cx="19" cy="19" r="2"/>
+            <path d="M9.5 9.5 6.3 6.3M14.5 9.5l3.2-3.2M9.5 14.5l-3.2 3.2M14.5 14.5l3.2 3.2"/>
+          </svg>
+        </span>
+      </div>
+      <h1 class="thanks-big">Thanks.</h1>
+      <p class="lede" style="margin-top:1.4em">A system that builds systems &mdash; <span class="accent">steered from your pocket.</span></p>
+      <p class="lede" style="margin-top:.8em;font-size:1.4em;">www.bliz.io &nbsp;&middot;&nbsp; github.com/vinceferro/kickoff</p>
+    </section>
+
+  </div>
+</div>
+
+<div id="counter"><span class="cur">1</span> / <span class="total">17</span></div>
+<div id="hint"><kbd>&larr;</kbd> <kbd>&rarr;</kbd> move &nbsp;·&nbsp; <kbd>F</kbd> fullscreen</div>
+
+<script>
+(function () {
+  "use strict";
+  var slides = Array.prototype.slice.call(document.querySelectorAll(".slide"));
+  var total = slides.length;
+  var idx = 0;
+
+  var progress = document.getElementById("progress");
+  var curEl = document.querySelector("#counter .cur");
+  var totalEl = document.querySelector("#counter .total");
+  var hint = document.getElementById("hint");
+  totalEl.textContent = String(total);
+
+  function render() {
+    for (var i = 0; i < slides.length; i++) {
+      slides[i].classList.toggle("active", i === idx);
+    }
+    curEl.textContent = String(idx + 1);
+    var pct = total > 1 ? (idx / (total - 1)) * 100 : 100;
+    progress.style.width = pct + "%";
+  }
+
+  function go(n) {
+    var next = Math.max(0, Math.min(total - 1, n));
+    if (next === idx) return;
+    idx = next;
+    render();
+  }
+  function next() { go(idx + 1); }
+  function prev() { go(idx - 1); }
+
+  function toggleFullscreen() {
+    var el = document.documentElement;
+    if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+      (el.requestFullscreen || el.webkitRequestFullscreen || function () {}).call(el);
+    } else {
+      (document.exitFullscreen || document.webkitExitFullscreen || function () {}).call(document);
+    }
+  }
+
+  document.addEventListener("keydown", function (e) {
+    switch (e.key) {
+      case "ArrowRight":
+      case "PageDown":
+        e.preventDefault(); next(); break;
+      case "ArrowLeft":
+      case "PageUp":
+        e.preventDefault(); prev(); break;
+      case " ":
+      case "Spacebar":
+        e.preventDefault(); if (e.shiftKey) { prev(); } else { next(); } break;
+      case "Home":
+        e.preventDefault(); go(0); break;
+      case "End":
+        e.preventDefault(); go(total - 1); break;
+      case "f":
+      case "F":
+        e.preventDefault(); toggleFullscreen(); break;
+      default: break;
+    }
+  });
+
+  // Click to advance (ignore the bottom chrome zone)
+  document.getElementById("stage").addEventListener("click", function (e) {
+    if (e.clientY > window.innerHeight - 56) return;
+    next();
+  });
+
+  // Touch / swipe nav
+  var tsX = 0, tsY = 0, tracking = false;
+  document.addEventListener("touchstart", function (e) {
+    if (e.touches.length !== 1) { tracking = false; return; }
+    document.body.classList.add("touch");
+    tsX = e.touches[0].clientX; tsY = e.touches[0].clientY; tracking = true;
+  }, { passive: true });
+  document.addEventListener("touchend", function (e) {
+    if (!tracking) return;
+    tracking = false;
+    var t = e.changedTouches[0];
+    var dx = t.clientX - tsX, dy = t.clientY - tsY;
+    if (Math.abs(dx) > 45 && Math.abs(dx) > Math.abs(dy) * 1.4) {
+      if (dx < 0) { next(); } else { prev(); }
+    }
+  }, { passive: true });
+
+  // Fade the keyboard hint after a few seconds
+  setTimeout(function () { if (hint) hint.style.opacity = "0"; }, 6000);
+
+  render();
+})();
+</script>
+</body>
+</html>
