@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # remote-normalize-selftest.sh — guard the core-clone origin check's URL normalization.
 #
-# THE BUG (2026-07-20): `kickoff pull` refused a real adopter (bliz) because the shared
+# THE BUG (2026-07-20): `kickoff pull` refused a real adopter because the shared
 # core clone's origin was `https://github.com/…` while KICKOFF_CORE_REMOTE resolved to
 # `git@github.com:…` — the SAME repo over a different transport. The guard compared the
 # two URLs LITERALLY, so a fleet whose adopters disagree on ssh-vs-https could never all
@@ -66,7 +66,7 @@ t "different host → DIFF"        "$(eq "$HOST"  "$HTTPS")" "DIFF"
 # a clone of a completely different repo. Loosening a fail-closed guard is the one direction that must
 # never regress, so these assertions are the point of this file, not an extra.
 # ── FALSE-REJECT controls: a VALID url for the same repo must not be refused ──────────────────────
-# Found by the Bliz coordinator reviewing core-v0.16 from the adopter side, by running the shipped
+# Found by an adopter-side coordinator reviewing core-v0.16 from the adopter side, by running the shipped
 # function rather than reading it. All three fail CLOSED (the safe direction) — but each produces a
 # "core clone origin MISMATCH" for a URL that is perfectly legal, and the message blames your config
 # rather than the spelling, so the diagnosis cost is high. `repo.git/` is the one that bites for real:

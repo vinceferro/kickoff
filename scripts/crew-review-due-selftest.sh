@@ -83,7 +83,7 @@ CREW_REVIEW_MARKER="$_ro" bash "$HERE/crew-review-due.sh" --mark >/dev/null 2>&1
 t "unwritable marker → non-zero exit (never a green lie)" "$([ "$_m_rc" -ne 0 ] && echo Y || echo N)" "Y"
 # …and the failure must survive a PIPE. exit 2 alone does not: `… --mark 2>&1 | tail -2` reports tail's
 # status, which is what an adopter's boot flow actually does when it runs six checks. An stdout-only
-# consumer must still SEE the failure, not silence. (Bliz coordinator, core-v0.16 review.)
+# consumer must still SEE the failure, not silence. (an adopter coordinator, core-v0.16 review.)
 _piped="$(CREW_REVIEW_MARKER="$_ro" bash "$HERE/crew-review-due.sh" --mark 2>/dev/null | tail -2)"
 t "failure is visible on STDOUT alone (survives a pipe that eats the exit code)" \
   "$(case "$_piped" in *FAILED*) echo Y ;; *) echo N ;; esac)" "Y"

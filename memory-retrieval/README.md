@@ -109,7 +109,7 @@ the fusion/cutoff re-tune, latency, and the residual misses:
 **[METRICS.md](./METRICS.md)**.
 
 > Run on **kickoff's own `memory/` corpus**, `./run.sh eval` reports **recall@1 85% / recall@3 85% /
-> recall@5 95% / MRR 0.872 / noise 4/4** (24-case eval-set) — a different corpus, so the numbers differ;
+> recall@5 95% / MRR 0.872 / noise 4/4** (historical 24-case run — the shipped default is the neutral eval-set template);
 > see METRICS.md.
 
 ### Wiring the hook into Claude Code

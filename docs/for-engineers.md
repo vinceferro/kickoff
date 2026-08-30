@@ -147,7 +147,7 @@ grows every turn; `./run.sh log-stats` re-derives fire count, surfaced %, and su
 
 ### What the metrics actually show (read honestly)
 
-Measured on **kickoff's own 24-case eval-set** (20 positive + 4 noise, grounded in real memory slugs),
+Measured historically on a 24-case eval-set (20 positive + 4 noise); the shipped default is the neutral `eval-set.template.json`,
 `./run.sh eval`, real local embeddings — full story in
 [`memory-retrieval/METRICS.md`](../memory-retrieval/METRICS.md):
 

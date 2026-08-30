@@ -2,7 +2,7 @@
 
 **Status: 19 confirmed findings (2 HIGH · 8 MEDIUM · 9 LOW), 4 refuted. FIXES PENDING — the push of core-v0.1 is HELD until these land.**
 
-Run 2026-07-02 as the pre-ship gate the operator requested before pushing core-v0.1 (R1+R2+R3+CLI) to the reference adopter (a live payments product). A 5-dimension adversarial workflow (`wf_3c75ec57-9b4`): each dimension briefed to BREAK its part, then EVERY finding adversarially verified (try-to-refute, reproduced in fixtures). This file is the actionable fix plan — **work it theme by theme, re-verify each with the harnesses (`scratchpad/*-test.sh` are session-scratch and gone after a refresh; re-derive or re-run the committed logic), then re-tag `core-v0.1` at the new HEAD (force-move; it's unpushed) and report the clean push to the operator.**
+Run 2026-07-02 as the pre-ship gate the operator requested before pushing core-v0.1 (R1+R2+R3+CLI) to the reference adopter (a live payments product). A 5-dimension adversarial workflow: each dimension briefed to BREAK its part, then EVERY finding adversarially verified (try-to-refute, reproduced in fixtures). This file is the actionable fix plan — **work it theme by theme, re-verify each with the harnesses (`scratchpad/*-test.sh` are session-scratch and gone after a refresh; re-derive or re-run the committed logic), then re-tag the release at the new HEAD and report the clean push to the operator.**
 
 Do NOT push (the operator's gated action). These are all reversible code fixes — apply them, re-verify, re-tag, report.
 
@@ -50,5 +50,5 @@ placeholder-denylist-of-one (the empty + YOUR-WORKER guard is enough); ambient-T
 ## After fixing
 1. Re-verify: re-run the harness LOGIC (preflight fail-modes, pull e2e, CLI both-journeys, the pure-pull realistic e2e that caught the R3 sibling bug) — and add a case per fixed finding, especially the reproductions (MC_STATE_FILE-into-core; PREFLIGHT_SKIP-via-up; dirty-clone launder).
 2. Confirm kickoff ITSELF still works (own supervisor boots, own preflight passes fresh-boot) and both journeys still pass.
-3. Commit (theme-grouped commits or one "harden core-v0.1 per pre-ship review" commit), update CORE-CHANGELOG.md, **force-move `core-v0.1` to the new HEAD** (unpushed — `git tag -f -a core-v0.1`).
+3. Commit (theme-grouped commits or one "harden core-v0.1 per pre-ship review" commit), update CORE-CHANGELOG.md, **move the release tag to the new HEAD** (`git tag -f -a <tag>`).
 4. Report to the operator: review found 2 HIGH + 17, all fixed + re-verified, here's the clean push turnkey.

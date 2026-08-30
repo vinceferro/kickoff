@@ -335,7 +335,7 @@ die() { printf '[kickoff] ERROR: %s\n' "$*" >&2; exit 1; }
 # scripts/remote-normalize-selftest.sh; do not "simplify" this back to `${u#*@}`.
 #
 # KNOWN, DELIBERATELY UNFIXED: `ssh://https://host/org/repo` collides with the canonical form, because
-# the scheme strips are sequential and both fire. Left alone on the Bliz coordinator's reasoning (review
+# the scheme strips are sequential and both fire. Left alone on an adopter coordinator's reasoning (review
 # of core-v0.16, 2026-07-22), which is right: this guard defends against an ACCIDENT — a stray clone, a
 # stale KICKOFF_CORE_REMOTE. It cannot defend against an adversary who controls $core_dir, because that
 # adversary can simply `git remote set-url origin` to the exact canonical URL. Exotic-URL hardening past
