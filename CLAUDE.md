@@ -114,6 +114,14 @@ session to mis-recall. And the recall hook now flags any surfaced memory carryin
 TODO/debt state with "verify before acting" — heed that flag; the fact was true when written, not
 necessarily now.
 
+**This repo ships the memory MACHINERY with an intentionally empty corpus.** Memory is org-local by
+design: your instance's `bring-up`/`adopt` seeds a blank index, and the lessons that make *your*
+session 40 smarter than session 1 are the ones *your* work earns — a pre-seeded corpus would be
+someone else's saga. (The live `memory/MEMORY.md` index is deliberately gitignored: it names
+whatever your org has learned, including private facts — `memory/private/` is the never-tracked
+layer the filesystem-only reader still recalls.) Product invariants that maintainers must not
+re-learn the hard way live in the always-loaded "Maintainer rules" section above, not in a corpus.
+
 ## The single tracker — one store, two views
 
 `mission-control/mission-state.json` is the **single source of truth** for project state — structured JSON the
@@ -208,6 +216,31 @@ project's own `CLAUDE.md` + `memory/`, the way any codebase earns its convention
   tolerate them.
 - **Boundaries are deliberate.** Keep dependencies one-directional; don't let layers leak. Enforce it, don't hope.
 - **Leave it cleaner than you found it** — but don't let a cleanup scope-creep the change in front of you.
+
+## Maintainer rules (release invariants — read before cutting a release)
+
+Hard-won invariants of THIS system's release mechanics. Each line exists because skipping it once
+broke every adopter at once. Agents working in this repo treat them as gates, not advice.
+
+- **Any change under `plugin/` bumps `plugin.json` version** — or every adopter's next `pull` fails
+  closed on cache drift.
+- **A shipped tag is a runtime pin. Never move or reuse it** — running instances verify their
+  `core.lock` tag still resolves to the pinned commit; re-pointing bricks workers on restart. Skip
+  the version instead.
+- **New files reach adopters only via `scripts/core-manifest.txt`** — it is an existence contract
+  probed on the git ref, not disk; a file that isn't listed travels to nobody no matter how green
+  the release was.
+- **An unreleased fix protects nobody** — adopters pin tags, not branches. A fix that falsifies
+  what an adopter wrote down must ship in a tag before it is called "fixed".
+- **Gates fail closed, and every gate ships with a selftest** — a check that has never been seen
+  RED proves nothing. Prove new checks can fail before trusting their green.
+- **One site fixed → check its siblings** — the same predicate usually lives in 2–3 places; a
+  one-site fix ships with both siblings still broken.
+- **Core scripts resolve sibling scripts from their own location**, never from `REPO_DIR` —
+  adopters run them from arbitrary checkouts.
+- **Engine parity covers the measurement, not just the run** — a capability must work AND be
+  observable on every supported engine; a metric that reads only one engine's transcripts reports
+  the other engine as absent.
 
 ## Design quality (anything with a UI)
 
