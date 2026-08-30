@@ -1,0 +1,162 @@
+# scripts/core-manifest.txt — the CORE file manifest for `kickoff pull`  [R3]
+#
+# WHAT THESE ARE
+#   The CORE files that travel via `kickoff pull`: pulled from a pinned git tag into
+#   a read-only clone ($KICKOFF_CORE_DIR) and integrity-pinned in .kickoff/core.lock.
+#   They are PULLED-AND-PINNED — NEVER hand-edited in an adopter. preflight check #6
+#   fails-closed on ANY drift: a copied-and-patched core file is exactly the fork R1
+#   set out to kill, and R3's whole point is that origin's improvement flows in ONCE.
+#
+# WHAT DOES NOT TRAVEL (instance data — per-adopter, stays local)
+#   .kickoff/            — PARTLY tracked: the generated .kickoff/.gitignore keeps the private
+#                          bits (instance.env, adopt-manifest.json, core.lock, state/, locks) out
+#                          of git; the team-shareable seams (KICKOFF.md, KICKOFF.local.md, bin/,
+#                          memory/) are TRACKED on purpose
+#   memory-retrieval/memory-index.db     — this adopter's built retrieval index
+#   memory-retrieval/eval-set.json       — this adopter's eval corpus (template DOES travel)
+#   mission-control/mission-state.json   — this adopter's live board state
+#
+# FORMAT
+#   One repo-root-relative path per line. Blank lines and `#` comment lines are ignored.
+#   `kickoff pull` reads THIS file from the pinned checkout (so each tag defines its own
+#   core set) and checksums each path relative to $KICKOFF_CORE_DIR into core.lock.
+
+# ── launcher + session-refresh supervisor ──────────────────────────────────────
+scripts/supervisor.sh
+scripts/session-run.sh
+scripts/start-supervisor.sh
+scripts/go-autonomous.sh
+scripts/rotate-log.sh
+
+# ── supervisor auth self-heal (inert-by-default; armed via KICKOFF_AUTH_HEAL in instance.env) ──
+#   supervisor.sh runtime-sources auth-heal.sh (fail-open stub if absent) and session-run.sh
+#   references relogin.sh — so BOTH must travel, or a pulled supervisor.sh dangles on a file
+#   `kickoff pull` never delivers (ships the wiring but not the capability). install-auth-heal.sh
+#   stays maintainer-only: adopters get the wiring pre-baked in supervisor.sh, so they never need
+#   the retrofit installer.
+scripts/auth-heal.sh
+scripts/relogin.sh
+
+# ── telegram-channel reap-on-startup (v0.6 hardening; default-on, KICKOFF_BRIDGE_REAP=0 disables) ──
+#   session-run.sh runtime-sources bridge-reap.sh (bash -n gated; absent/broken → a no-op stub,
+#   the same discipline as auth-heal.sh above) to free THIS project's getUpdates slot from a
+#   VERIFIED-stale holder before claude spawns — so it must travel, or a pulled session-run.sh
+#   dangles on a file `kickoff pull` never delivers.
+scripts/bridge-reap.sh
+
+# ── fail-closed preflight + the per-instance config contract ────────────────────
+scripts/preflight.sh
+scripts/instance.env.example
+
+# ── the generic, language-agnostic scanners (quality machinery) ─────────────────
+scripts/scan-secrets.sh
+scripts/scan-structure.sh
+
+# ── local serving: the promoted box-ingress machinery (design §4 / §7.6) ────────
+#   One machine-level Caddy singleton fronts every adopter's multi-service preview under
+#   /<project>/<app>; state is registry.json under $INGRESS_DIR (~/box-ingress), zero repo
+#   footprint, so eject runs `ingress.sh remove <project>`. install.sh is the operator turnkey
+#   for reboot persistence (user-systemd). Pinned/pullable so the machinery travels with a clone.
+scripts/ingress.sh
+scripts/ingress-install.sh
+
+# ── Tier-1 public sharing: the zero-spend Tailscale Funnel enablement turnkey (v0.5 G3) ──
+#   The single-service counterpart to ingress.sh's multi-service funnel: checks Funnel enablement +
+#   relays the one-time consent turnkey so a friend NOT on the tailnet can open a public link. The
+#   `preview` skill's `share` step drives it. Read-only (status probes only) — never mutates tailscale.
+scripts/share-enable.sh
+
+# ── mission control: the WHOLE SERVED SURFACE travels + pins together (core-v0.4 S5) ──
+#   Closes the pre-existing half-measure: only mc-update.py was pinned while the server
+#   that routes everything + the boards it serves were not — pinning a deck without its
+#   server is how a stale server 404s a fresh deck. Per-instance data still never travels:
+#   mission-state.json (the adopter's live board, KICKOFF_STATE-wired) and the runtime
+#   files (.mission-token, secrets-inbox/, *.lock) are gitignored, so a served core
+#   checkout stays clean under the whole-tree pin.
+mission-control/mc-update.py
+mission-control/server.py
+mission-control/dashboard.html
+mission-control/secrets.html
+mission-control/universe.html
+
+# ── the universe deck's baked default theme (template→seam: `adopt` seeds the editable
+#    .kickoff/universe.theme.json per-instance copy — THAT one is adopter-owned, never
+#    pinned; this template is the core default /universe-theme falls back to) ──
+scripts/templates/universe.theme.json
+
+# ── vendored Three.js (core-v0.4 S5) — the EXACT transitive import closure universe.html
+#    uses (three@0.160.0 from the integrity-verified npm tarball; see PROVENANCE.md).
+#    Upstream layout preserved so the addons' relative imports resolve unchanged; served
+#    ONLY by server.py's realpath-contained /vendor/ route. The deck loads with ZERO
+#    external requests — no CDN at runtime. NEVER hand-edit (drift fails preflight #6). ──
+mission-control/vendor/three/LICENSE
+mission-control/vendor/three/PROVENANCE.md
+mission-control/vendor/three/build/three.module.js
+mission-control/vendor/three/examples/jsm/controls/OrbitControls.js
+mission-control/vendor/three/examples/jsm/postprocessing/EffectComposer.js
+mission-control/vendor/three/examples/jsm/postprocessing/MaskPass.js
+mission-control/vendor/three/examples/jsm/postprocessing/Pass.js
+mission-control/vendor/three/examples/jsm/postprocessing/RenderPass.js
+mission-control/vendor/three/examples/jsm/postprocessing/ShaderPass.js
+mission-control/vendor/three/examples/jsm/postprocessing/UnrealBloomPass.js
+mission-control/vendor/three/examples/jsm/shaders/CopyShader.js
+mission-control/vendor/three/examples/jsm/shaders/LuminosityHighPassShader.js
+
+# ── brownfield adopt receipt: the manifest writer/verifier (the eject/preflight-#8 spine) ─
+scripts/adopt-manifest.py
+
+# ── the split-charter SEAM template (gen-charter writes .kickoff/KICKOFF.md from this; it
+#    travels+pins so each tag defines its own charter, and sync-seams regenerates it on pull) ─
+scripts/templates/KICKOFF.md
+
+# ── the .kickoff/.gitignore SEAM template (gen-gitignore writes .kickoff/.gitignore from this;
+#    travels+pins so each tag defines the ignore set, and sync-seams regenerates it on pull) ─
+scripts/templates/kickoff.gitignore
+
+# ── the .kickoff/README SEAM template (gen-readme writes .kickoff/README from this — the human-
+#    facing map of the seam dir; travels+pins per tag, and sync-seams regenerates it on pull) ─
+scripts/templates/kickoff-README.md
+
+# ── the function-agent charter template (every new agent is authored from it) ───
+.claude/agent-charter-template.md
+
+# ── hybrid memory-retrieval layer (the built index + eval-set.json stay local) ──
+memory-retrieval/hook.mjs
+memory-retrieval/index.mjs
+memory-retrieval/retrieve.mjs
+memory-retrieval/eval.mjs
+memory-retrieval/refresh-metrics.mjs
+memory-retrieval/log-stats.mjs
+memory-retrieval/demo.mjs
+memory-retrieval/run.sh
+memory-retrieval/package.json
+memory-retrieval/eval-set.template.json
+memory-retrieval/install-model.mjs
+memory-retrieval/lib/embeddings.mjs
+memory-retrieval/lib/memory.mjs
+
+# ── the pull mechanism itself (self-pinned) ─────────────────────────────────────
+#   So a hand-edit to the turnkey / manifest / changelog in an adopter's core checkout
+#   is caught by preflight check #6 too. (Drift/accident guard — core.lock is unsigned,
+#   so a determined actor who rewrites core files could regenerate the lock; this stops
+#   the fat-finger, not a targeted attacker.)
+scripts/kickoff
+scripts/core-manifest.txt
+CORE-CHANGELOG.md
+
+# ── §5 THE PLUGIN — the engine packaged as a Claude Code plugin (design §1.3/§2.2) ──────────────
+#   The plugin lives at ~/kickoff-core/plugin/ in the pulled clone. `kickoff adopt` registers it as
+#   a PROJECT-SCOPE local-path marketplace (kickoff-local) + enables it (2 repo settings keys);
+#   `kickoff pull` re-syncs its user-global cache; the interactive session runs from that cache and
+#   the headless worker execs it via `--plugin-dir`. Listed here so the plugin TRAVELS with the tag
+#   and the whole-tree lock (format 2) PINS every file at the pinned commit — the plugin `version`
+#   is baked into each core-v* tag (LOCKED decision #1), so a pull always re-syncs deterministically.
+#   The heavy memory-retrieval/ engine is NOT bundled: the thin plugin/hooks/memory-hook.sh REFERENCES
+#   $KICKOFF_CORE_DIR/memory-retrieval/hook.mjs (LOCKED decision #4), which stays single-sourced above.
+plugin/.claude-plugin/plugin.json
+plugin/.claude-plugin/marketplace.json
+plugin/hooks/hooks.json
+plugin/hooks/memory-hook.sh
+plugin/.mcp.json
+plugin/skills
+plugin/agents

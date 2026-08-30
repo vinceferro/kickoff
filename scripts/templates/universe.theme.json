@@ -1,0 +1,59 @@
+{
+  "_readme": [
+    "universe.theme.json — the 3D universe deck's per-instance theme (core-v0.4 S4).",
+    "Seeded to .kickoff/universe.theme.json at adopt time; THAT copy is yours to edit",
+    "(it is never regenerated or drift-pinned — edit, save, reload /universe).",
+    "",
+    "WHAT YOU CAN TUNE — palette (retint) + bounded knobs (rescale) + strings:",
+    "  palette.*      strict '#rrggbb' colors. An invalid value falls back to the default.",
+    "  knobs.*        multipliers on the shipped look (1.0 = default). Each is CLAMPED to",
+    "                 bounds in the deck:  particleDensity 0.25–2.0 · bloomStrength 0–1.8",
+    "                 · starSize 0.6–1.6 · galaxySize 0.7–1.3 · tunnelIntensity 0.3–1.6.",
+    "  strings.*      signature (enter-screen credit line, empty = hidden), tagline (the",
+    "                 enter-screen sub-line), genesisLabel (what the readout calls the",
+    "                 center when you fly into it — the org's genesis / control plane).",
+    "",
+    "WHAT IS FIXED — the organic primitives are NOT themeable, by design: soft additive",
+    "round-point stars, the offset-blob nebula clouds, halos-not-rings, curved quantum",
+    "tunnels. A theme retints and rescales the cosmos; it cannot turn it into hard",
+    "geometric shapes. The defaults below ARE the shipped organic look.",
+    "",
+    "PALETTE MAP: accent = in-progress/core (the hero teal) · accentWarm = waiting/labels",
+    "· accentPlan = needs-planning · ambient = ambient particles · idle = idle functions",
+    "· bg1/bg2 = panel backgrounds · space = the void (page bg + depth fog) · galaxyHues =",
+    "cycled per-domain galaxy tints (1–12 entries) · galaxyCore = the warm galaxy-core /",
+    "star-birth light · galaxyEdge = the deep dust edge · coreHalo/coreGlow/coreHeart =",
+    "the central genesis glow, outer→inner · jarvis/jarvisDim = the command-layer readout."
+  ],
+  "version": 1,
+  "palette": {
+    "accent": "#5fa8b0",
+    "accentWarm": "#d99a5c",
+    "accentPlan": "#9a93cf",
+    "ambient": "#6fb6c8",
+    "idle": "#3a4e5e",
+    "bg1": "#10161e",
+    "bg2": "#1a2332",
+    "space": "#0e151f",
+    "galaxyHues": ["#6fb6c8", "#c89a6f", "#9a93cf", "#7fc89a", "#c87f9a", "#bfe4ea"],
+    "galaxyCore": "#fff1d6",
+    "galaxyEdge": "#2a2068",
+    "coreHalo": "#8fd4dc",
+    "coreGlow": "#bfeaf0",
+    "coreHeart": "#fff1de",
+    "jarvis": "#bfe4ea",
+    "jarvisDim": "#86b0bb"
+  },
+  "knobs": {
+    "particleDensity": 1.0,
+    "bloomStrength": 1.0,
+    "starSize": 1.0,
+    "galaxySize": 1.0,
+    "tunnelIntensity": 1.0
+  },
+  "strings": {
+    "signature": "",
+    "tagline": "soft mode · the org, in space",
+    "genesisLabel": "Telegram"
+  }
+}
