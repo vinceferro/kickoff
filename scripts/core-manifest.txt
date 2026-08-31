@@ -167,25 +167,13 @@ memory-retrieval/run.sh
 #   memory-search-probe.sh makes acceptance proof P1 runnable. P1 ("a fresh opencode session's
 #   memory_search returns real hits") previously needed a human in a live session — a bad place for
 #   MINIMAL: default_agent + instructions + autoupdate off, and NOTHING else, because the
-mission-control/dashboard.html
-mission-control/mc-update.py
+# PUBLIC LINE (ratified 2026-08-31, v1-alpha): mission-control/* and TRACKER-ARCHIVE.md are
+#   PRIVATE-LINE capabilities — the public core ships the wiring (the mission-control skill),
+#   not the capability, so they are not part of this existence contract. The fleet's private
+#   line keeps them; a future public MC release re-adds its entries here alongside the files.
+
 #   mission-control/mission-state.json   — this adopter's live board state
-mission-control/secrets.html
-mission-control/server.py
 # ── mission control: the WHOLE SERVED SURFACE travels + pins together (core-v0.4 S5) ──
-mission-control/universe.html
-mission-control/vendor/three/build/three.module.js
-mission-control/vendor/three/examples/jsm/controls/OrbitControls.js
-mission-control/vendor/three/examples/jsm/postprocessing/EffectComposer.js
-mission-control/vendor/three/examples/jsm/postprocessing/MaskPass.js
-mission-control/vendor/three/examples/jsm/postprocessing/Pass.js
-mission-control/vendor/three/examples/jsm/postprocessing/RenderPass.js
-mission-control/vendor/three/examples/jsm/postprocessing/ShaderPass.js
-mission-control/vendor/three/examples/jsm/postprocessing/UnrealBloomPass.js
-mission-control/vendor/three/examples/jsm/shaders/CopyShader.js
-mission-control/vendor/three/examples/jsm/shaders/LuminosityHighPassShader.js
-mission-control/vendor/three/LICENSE
-mission-control/vendor/three/PROVENANCE.md
 #   mission-state.json (the adopter's live board, KICKOFF_STATE-wired) and the runtime
 #   mode itself is documented in RUNNING.md ("engine-development mode"). Not a boot check — the
 #   newbox-from-main.sh is the step BEFORE bringup for a clone of PUBLIC main. main (the curated
@@ -382,7 +370,6 @@ scripts/templates/upgrade-turnkey.sh.tmpl
 #   this is how they find out which one they got. Ships because an adopter's live config is the
 # ── Tier-1 public sharing: the zero-spend Tailscale Funnel enablement turnkey (v0.5 G3) ──
 #   to run. It is wired via lefthook.yml's pre-push, the only discovery path that matters.
-TRACKER-ARCHIVE.md
 #    travels+pins so each tag defines its own charter, and sync-seams regenerates it on pull) ─
 #    travels+pins so each tag defines the ignore set, and sync-seams regenerates it on pull) ─
 #    ~/upgrade-<adopter>-to-<ver>.sh from this). NOT a seam: it lands in $HOME, never in the
