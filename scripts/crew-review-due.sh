@@ -27,7 +27,7 @@ set -uo pipefail
 # The $PWD fallback is right only because the worker's cwd IS the repo root — and nothing asserted that.
 # A coordinator that spans several repos spends much of a session `cd`-ed into a DIFFERENT one; a boot
 # check firing from there would stamp that repo's marker, silence the cadence for the wrong project,
-# leave the real one unmarked, and report nothing. (an adopter coordinator, core-v0.16 review: it `cd`s into a
+# leave the real one unmarked, and report nothing. (Bliz coordinator, core-v0.16 review: it `cd`s into a
 # sibling repo dozens of times a day — a live risk there, not a theoretical one.) So require the cwd to
 # actually BE a kickoff instance, and fail loud rather than write somewhere plausible.
 KDIR="${KICKOFF_DIR:-$PWD/.kickoff}"
@@ -55,7 +55,7 @@ if [ "${1:-}" = "--mark" ]; then
     # Say it on BOTH streams. exit 2 alone does not survive a pipe — and piping is the natural thing to
     # do when a boot sequence runs six checks and wants the last lines of each (`… --mark 2>&1 | tail -2`
     # discards the status and reports tail's). An stdout-only consumer would otherwise see nothing at all
-    # here: no success line, no failure line, indistinguishable from silence. Reported by an adopter's
+    # here: no success line, no failure line, indistinguishable from silence. Reported by the Bliz
     # coordinator from its real boot flow. Keep exit 2 for callers that do check.
     echo "crew-review marker FAILED: could not write $MARKER (check the path/permissions)"
     echo "crew-review marker FAILED: could not write $MARKER (check the path/permissions)" >&2

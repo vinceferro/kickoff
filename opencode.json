@@ -5,5 +5,11 @@
     "AGENTS.md"
   ],
   "autoupdate": false,
-  "model": "zai-coding-plan/glm-5.3-flash"
+  "model": "llm-gateway/glm-5.3-flash",
+  "permission": {
+    "external_directory": {
+      "/tmp/*": "allow",
+      "/tmp/**": "allow"
+    }
+  }
 }

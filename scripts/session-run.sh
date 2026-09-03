@@ -71,8 +71,9 @@ mkdir -p "$KICKOFF_DIR"
 # deliberately omits REPO_DIR — identity is resolved, never config). PERMISSION_MODE is
 # deliberately NOT on it (v0.7 G1 §2.3): the autonomy grant flows argv / terminal env ONLY
 # — a plain PERMISSION_MODE=auto line in a gitignored file must never arm an autonomous
-# worker. MODEL/EFFORT ARE on it: a per-adopter model/effort pin survives every restart path.
-_INSTANCE_ENV_WHITELIST="REPO_DIR KICKOFF_CORE_DIR MC_STATE_FILE MC_TRACKER_FILE MEMORY_DB MEMORY_HOOK_LOG MEMORY_DIR MEMORY_INDEX TELEGRAM_STATE_DIR CHANNEL_SPEC REGROUND_PROMPT MODEL EFFORT MAX_CONCURRENT_AGENTS DEPLOY_BRANCH CADENCE ORPHAN_DAYS ORPHAN_DEPTH MEMORY_INDEX_BUDGET_LINES MEMORY_INDEX_BUDGET_BYTES CREW_REVIEW_CADENCE_DAYS WORKER_ENGINE OPENCODE_MODEL_PROVIDER OPENCODE_MODEL_ID"
+# worker. AUTO_PICKUP rides like MODEL/EFFORT (a per-adopter pin that survives every launch and
+# hop — a bounded grant: it still stops at every gate and the crash-loop guard revokes it).
+_INSTANCE_ENV_WHITELIST="REPO_DIR KICKOFF_CORE_DIR MC_STATE_FILE MC_TRACKER_FILE MEMORY_DB MEMORY_HOOK_LOG MEMORY_DIR MEMORY_INDEX TELEGRAM_STATE_DIR CHANNEL_SPEC REGROUND_PROMPT MODEL EFFORT MAX_CONCURRENT_AGENTS DEPLOY_BRANCH CADENCE AUTO_PICKUP ORPHAN_DAYS ORPHAN_DEPTH MEMORY_INDEX_BUDGET_LINES MEMORY_INDEX_BUDGET_BYTES CREW_REVIEW_CADENCE_DAYS WORKER_ENGINE OPENCODE_MODEL_PROVIDER OPENCODE_MODEL_ID"
 load_instance_env() {
   local f="${1:-}"
   [ -n "$f" ] && [ -f "$f" ] || return 0
@@ -338,7 +339,7 @@ announce_restart() {
   # the WORK, not the refresh mechanics. Read the CURRENT board state — the `headline`
   # is the coordinator-maintained "what's the org doing now" line, rewritten at every
   # checkpoint; `in_progress[0]` is insertion-ordered so its [0] is the OLDEST item and
-  # fossilizes as the org marches on (it froze the ping for ~10 restarts). So
+  # fossilizes as the org marches on (it froze the ping for ~10 restarts — msg 1492). So
   # prefer the headline, fall back to in_progress[0] (an adopter with no headline yet),
   # treating an empty-string headline as absent. Any failure degrades to the generic
   # line — the announce itself must never break on a board hiccup.
@@ -370,10 +371,12 @@ announce_restart() {
   # table (/proc/<pid>/cmdline, ps), where every worker restart would otherwise expose it.
   # So the URL is fed to curl OFF argv: printf writes `url=<...>` to a curl config that curl
   # reads from STDIN (-K -). printf is a bash builtin (no separate process, no /proc entry),
-  # and curl's argv now carries only the non-secret chat_id + text. curl -s, no -x. A
-  # non-zero curl must NOT abort the wrapper (the `if` neutralises set -e/pipefail here).
+  # and curl's argv now carries only the non-secret chat_id + text. curl -s, no -x. And `-q`
+  # must stay curl's FIRST argument — curl reads ~/.curlrc / $CURL_HOME/.curlrc before any
+  # option, so a trace-ascii/output line there would write the token-bearing URL to disk.
+  # A non-zero curl must NOT abort the wrapper (the `if` neutralises set -e/pipefail here).
   local api_url="https://api.telegram.org/bot${token}/sendMessage"
-  if printf 'url=%s\n' "$api_url" | curl -s -o /dev/null \
+  if printf 'url=%s\n' "$api_url" | curl -q -s -o /dev/null \
        --max-time 10 \
        --data-urlencode "chat_id=${chat_id}" \
        --data-urlencode "text=${text}" \

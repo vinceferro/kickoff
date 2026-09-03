@@ -1,7 +1,7 @@
 #!/bin/sh
 # install.sh — the one-command installer for kickoff  (v0.7: "get in with one command").
 #
-#   curl -fsSL https://raw.githubusercontent.com/vinceferro/kickoff/core-v1.0.0-alpha/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/vinceferro/claude-kickoff/core-v1.0/install.sh | sh
 #   (the canonical, tag-pinned URL — /main/ is the moving alias; see docs/release-checklist.md §4)
 #
 # WHAT IT DOES (machine-level only — no repo is touched, no file of yours is edited)
@@ -50,7 +50,7 @@ main() {
   # cryptically when it's unset (cron/CI/minimal containers — same class as the $SHELL guard below).
   [ -n "${HOME:-}" ] || die "\$HOME is not set — set HOME (or KICKOFF_CORE_DIR + KICKOFF_BIN_DIR), then re-run."
 
-  KICKOFF_CORE_REMOTE="${KICKOFF_CORE_REMOTE:-https://github.com/vinceferro/kickoff.git}"
+  KICKOFF_CORE_REMOTE="${KICKOFF_CORE_REMOTE:-https://github.com/vinceferro/claude-kickoff.git}"
   KICKOFF_CORE_DIR="${KICKOFF_CORE_DIR:-$HOME/kickoff-core}"
   KICKOFF_BIN_DIR="${KICKOFF_BIN_DIR:-$HOME/.local/bin}"
   want_tag="${KICKOFF_TAG:-}"

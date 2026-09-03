@@ -1,40 +1,125 @@
 {
-  "_about": "DEFAULT eval set (neutral) — this repo ships `eval-set.json` as a copy of `eval-set.template.json`; replace the cases with ones written against YOUR `memory/` corpus. Each case is a realistic DECISION-TIME query an agent would actually face, paired with the ONE memory slug (the .md filename without extension) that SHOULD be recalled. RULE: write the query in DIFFERENT words than the target memory — paraphrase it — so the eval tests real recall, not lexical echo (that paraphrase gap is exactly what the semantic/vector arm is for). Add a few NOISE cases (`expect: null`) — off-domain questions the relevance cutoff must SUPPRESS (surface nothing). Run: ./run.sh eval. NOTE: this repo ships its `memory/` corpus empty by design (machinery only), so the example `expect` slugs below do NOT exist in `../memory/` here — keep the ones that match your files, edit the rest.",
+  "_about": "KICKOFF eval set — labelled (query -> expected-memory-slug) cases written against THIS repo's `memory/` corpus (the ~38 one-fact files, MEMORY.md excluded). Each positive case is a realistic DECISION-TIME question an agent here would actually face, PARAPHRASED so it shares little vocabulary with the target memory's name/description/body — that paraphrase gap is what tests real semantic recall instead of lexical echo. `expect` = the .md filename (no extension) that SHOULD be recalled; every slug below is a real file in `../memory/`. Cases with `expect:null` are NOISE — off-domain questions the relevance cutoff must SUPPRESS (surface nothing). Coverage is spread across the corpus themes (operator working-style · build-craft/quality-bar · the 3D continuum/universe · the memory system itself · gated-ops/trust-boundary · render-vs-device · delegation/subagents · machine-limits), not 20 near-duplicates. The reference set that produced METRICS.md is a private third-party corpus and does NOT ship. Run: ./run.sh eval",
   "cases": [
     {
-      "query": "I'm about to deploy code that reads a new database column, what order do I do things in",
-      "expect": "activation-runs-before-code-and-fails-closed",
-      "note": "Recall migrate-before-code / fail-closed / dependency-before-consumer cutover discipline."
+      "query": "A founder I've never worked with just started firing quick one-line messages at me — how do I get us productive fast instead of fumbling the first hour?",
+      "expect": "read-the-operator-early",
+      "note": "Operator working-style. Recall: capture this person's style in the first exchanges — ask only genuine taste calls, execute everything reversible, no filler, read stream-vs-batch."
     },
     {
-      "query": "I finished building this feature, is a self-review enough before merging",
+      "query": "He's unhappy that the slide deck I drafted in his voice comes across as too self-centered — how should I rewrite the phrasing?",
+      "expect": "operator-voice-no-first-person",
+      "note": "Operator working-style. Recall: write decks/comms system- and work-centric; drop first-person 'I/my/me'; the system is the point, the product is the proof."
+    },
+    {
+      "query": "Working through the night with nobody at the keyboard — which fixes can I just land on my own and which ones should I hold for his call in the morning?",
+      "expect": "ship-objective-stage-subjective",
+      "note": "Operator working-style (autonomous run). Recall: land the one-right-answer fixes on a green mandate, hold taste/defaults/tradeoffs for the human, close with shipped/queued/blocked."
+    },
+    {
+      "query": "My code change is correct but his board will look exactly the same to him as before — how do I report it without sounding like I did nothing or like I'm bluffing?",
+      "expect": "a-fix-he-cant-see-isnt-a-fix",
+      "note": "Operator working-style (reporting). Recall: report the visible delta on HIS surface, or say plainly it won't show and why — 'fixed + verified' alone reads as dishonesty when his view is unchanged."
+    },
+    {
+      "query": "I built the checkout-and-payment path and went over it myself and it looks clean — is that enough sign-off before it goes live?",
       "expect": "adversarial-review-catches-what-the-builder-misses",
-      "note": "Recall the build -> adversarial-review -> fix -> re-review pattern (a fresh reviewer breaks it)."
+      "note": "Build-craft. Recall: a builder shares its own blind spots — run build -> review-by-a-DIFFERENT-agent-briefed-to-break-it -> fix -> re-review on money/security/irreversible paths."
     },
     {
-      "query": "should I kill all the node processes to clean up",
-      "expect": "dont-broad-pkill-shared-services",
-      "note": "Recall: a broad pkill takes out shared services other work depends on."
+      "query": "Records keep landing in the store missing a required timestamp. Do I backfill the broken ones, make the reader cope with the gap, or something else so it actually stops happening?",
+      "expect": "enforce-data-invariants-at-the-writer",
+      "note": "Build-craft. Recall: only fixing the invariant at the single writer (the mutation chokepoint) stops recurrence; backfilling instances and hardening the consumer don't."
     },
     {
-      "query": "how should the agent remember lessons across sessions",
+      "query": "I changed how the production site routes requests — a global rule covering every incoming URL — and I'm ready to call it shipped now that the build is clean. For this kind of change specifically, is a clean build sufficient proof it's actually working for real visitors, or is there an extra verification step on the live site I shouldn't skip before I report it done?",
+      "expect": "verify-live-behaviour-after-deploy",
+      "note": "Build-craft / gated-ops. Recall: a green build is not a working deploy — curl the real live URLs after a routing/redirect change; watch the substring-host self-redirect loop."
+    },
+    {
+      "query": "I'm about to start building the big timeline surface for the 3D org view. Before I design any of it I want the operator's actual intent: is this meant to be a tidy after-the-fact playback of how the product got built, or is he chasing the feeling of watching the company come to life and do its work in real time? What should I be optimizing the whole thing for?",
+      "expect": "continuum-is-the-universe-at-work",
+      "note": "3D continuum/universe. Recall the vision: every GENUINE org event animated on the timeline; ephemeral agents present-while-working; legible-at-a-glance, navigable, alive as the chat happens."
+    },
+    {
+      "query": "Before I sink time into making the fancy 3D view beautiful, how do I know it's pulling its weight versus the plain list — and what if the answer is it isn't?",
+      "expect": "prove-the-thesis-before-gilding",
+      "note": "3D continuum/universe + build-craft. Recall: scale-test against the simple baseline, give an honest keep/kill (screensaver verdict on the table), polish ONLY what earns its place."
+    },
+    {
+      "query": "Are we wrong to keep our knowledge as plain markdown files indexed in one doc — should we move to an embedding/vector store, and what's the real weak spot if we stay?",
       "expect": "memory-system-files-as-truth-plus-retrieval",
-      "note": "Recall: markdown files are the truth, the index is a derived cache + retrieval layer."
+      "note": "The memory system itself. Recall: flat files are the right design at this scale (retrieval = attention over the in-context index); the real weakness is proactive retrieval-TIMING; augment with hybrid FTS/vec only past ~hundreds."
     },
     {
-      "query": "what's a good recipe for sourdough bread",
-      "expect": null,
-      "note": "NOISE — totally off-domain; the cutoff must suppress (surface nothing)."
+      "query": "My task needs a terraform apply and a production secret set, but I'm walled off from both. How do I actually get this shipped?",
+      "expect": "design-the-human-in-the-loop-dont-fight-it",
+      "note": "Gated-ops/trust-boundary. Recall: don't fight the boundary — author the full pipeline/IaC, derive every value you can, hand the human one approval click + only the un-derivable vendor keys."
     },
     {
-      "query": "what is the weather forecast for tomorrow afternoon",
-      "expect": null,
-      "note": "NOISE — no corpus overlap; cutoff must suppress."
+      "query": "The operator is actively checking items off his board right now. Can I just re-run my seed script that rewrites the whole state file to apply my update?",
+      "expect": "dont-clobber-live-operator-state",
+      "note": "Gated-ops. Recall: never full-overwrite a live board's state (it resets his done flags so cleared todos reappear); mutate incrementally; writing his owned state is gated even when additive/reversible."
     },
     {
-      "query": "asdf qwerty zxcvb foobar baz",
+      "query": "If the signing key is absent when the service boots, is it okay for it to quietly fall back to a default so things keep working?",
+      "expect": "activation-runs-before-code-and-fails-closed",
+      "note": "Gated-ops / activation. Recall: secrets must FAIL CLOSED — a missing key returns 503/hard error, never an insecure default; plus migrate-before-code and dependency-before-consumer ordering."
+    },
+    {
+      "query": "I adjusted some frosted-glass blur styling and it looks flawless in my headless screenshots. Safe to tell him it's confirmed working on his iPhone?",
+      "expect": "the-render-is-not-the-device",
+      "note": "Render-vs-device. Recall: a headless Chromium shot is not Safari/iPhone — say 'rendered, confirm on your device'; never claim verified on an engine the box can't run; zoom into each region yourself."
+    },
+    {
+      "query": "My headless screenshot script returns instantly against the static copy of the board but hangs until timeout against the live server. What's going wrong?",
+      "expect": "screenshot-harness-vs-live-sse",
+      "note": "Render-vs-device / machine. Recall: don't wait on networkidle against a live SSE/EventSource stream (the open connection never settles) — use domcontentloaded + an explicit readiness hook."
+    },
+    {
+      "query": "I already launched a background build agent and now the requirements have shifted — can I just send it the correction while it's running?",
+      "expect": "dispatched-workers-cant-be-steered-midflight",
+      "note": "Delegation/subagents. Recall: a dispatched worker can't be reliably redirected live — front-load brief correctness; let it finish and edit, or stop-and-re-dispatch; sequence dependent steps."
+    },
+    {
+      "query": "I've farmed a few jobs out to background workers and I'm running this from my phone. If the automatic nudge that resumes me after one of them wraps up quietly fails to arrive, the founder could be left waiting with no idea anything is stuck. How do I guard against that — and keep the guard itself from turning into an annoying flood of messages?",
+      "expect": "set-a-completion-watchdog",
+      "note": "Delegation/subagents. Recall: don't rely on the completion re-trigger alone — set a fallback heartbeat/cron and emit progress beats; design the watch with a stop condition, cadence, and bounded lifetime."
+    },
+    {
+      "query": "What's the right operating shape for one coordinator steering a whole crew of specialist agents without burning out its own context window?",
+      "expect": "the-ai-org-operating-model",
+      "note": "Delegation / operating-model. Recall: delegate-and-verify to protect context, parallel-lens synthesis without flattery, one shared surface for org + founder, gated mutations + scoped read roles."
+    },
+    {
+      "query": "Before I spin up four build agents in parallel, what actually caps how much concurrency I can get away with on this box?",
+      "expect": "the-machine-is-the-real-ceiling",
+      "note": "Machine-limits. Recall: the host (CPU/RAM), not the model, bounds parallelism — check load first, keep it low, pre-warm cold builds (workers die at ~600s no output), your own idle WebGL eyes can be the load."
+    },
+    {
+      "query": "I've got a handful of leftover test servers from my run to tidy up. Is it safe to sweep them by killing everything that matches the process name in one shot?",
+      "expect": "dont-broad-pkill-shared-services",
+      "note": "Machine-limits / ops-safety. Recall: never name-pattern-kill a shared service — it takes down the live :9200 board + demo that share the process name; kill only the exact PIDs/ports you started."
+    },
+    {
+      "query": "What's the best way to sear a medium-rare ribeye on a cast-iron pan?",
       "expect": null,
-      "note": "NOISE — gibberish; cutoff must suppress."
+      "note": "NOISE — cooking, totally off-domain; the cutoff must suppress (surface nothing)."
+    },
+    {
+      "query": "Who won the most recent FIFA World Cup final and what was the score?",
+      "expect": null,
+      "note": "NOISE — sports trivia, no corpus overlap; cutoff must suppress."
+    },
+    {
+      "query": "Should I upgrade my robot vacuum to the model with lidar room mapping?",
+      "expect": null,
+      "note": "NOISE — unrelated consumer tech; cutoff must suppress."
+    },
+    {
+      "query": "How many days of statutory paid leave do new parents get?",
+      "expect": null,
+      "note": "NOISE — off-domain HR/policy question; cutoff must suppress."
     }
   ]
 }

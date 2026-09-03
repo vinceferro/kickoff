@@ -73,7 +73,8 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE 2>/dev/null || true
 unset REPO_DIR KICKOFF_CORE_DIR KICKOFF_CORE_REMOTE MC_STATE_FILE MC_TRACKER_FILE \
       MEMORY_DB MEMORY_HOOK_LOG MEMORY_DIR MEMORY_INDEX TELEGRAM_STATE_DIR CHANNEL_SPEC \
       REGROUND_PROMPT PERMISSION_MODE EFFORT MODEL MAX_CONCURRENT_AGENTS DEPLOY_BRANCH \
-      CADENCE INSTANCE_ENV LOCKFILE ORIGIN_STATE_DIR OPERATOR_STATE_DIR 2>/dev/null || true
+      CADENCE INSTANCE_ENV LOCKFILE ORIGIN_STATE_DIR OPERATOR_STATE_DIR \
+      MEMORY_EMBEDDER KICKOFF_MODEL_DIR KICKOFF_MODEL_OFFLINE KICKOFF_EMBED_PROBE 2>/dev/null || true
 
 PASS=0; FAIL=0
 ok()  { printf '  ✅ %s\n' "$1"; PASS=$((PASS+1)); }
@@ -590,6 +591,46 @@ chk "sync-seams: the refused seam is left UNTOUCHED (not overwritten)" \
 python3 "$AM" sync-seams --repo "$GS" --source core-vNEW --force-regenerate >/dev/null
 chk "sync-seams --force-regenerate: hand-edit DISCARDED, template restored" \
   "! grep -q 'HAND-EDIT by the operator' \"$GS/.kickoff/KICKOFF.md\""
+echo
+
+# ══════════════════════════════════════════════════════════════════════════════════════
+echo "3b. pull --reclass-evolved — the sanctioned escape for ORG-EVOLVED seams (the 0831 roll's hand-fix, automated)"
+# ══════════════════════════════════════════════════════════════════════════════════════
+# The live incident (2026-08-31): three orgs' pulls blocked by org-evolved seams (class=seam whose
+# on-disk bytes drifted from the recorded sha256_at_write — sync-seams' fail-closed refusal set);
+# the roll repaired each BY HAND by reclassing seam → live-config in the manifest. This lane proves
+# the wired escape end-to-end: WITHOUT the flag the pull still refuses (byte-behaviour-unchanged,
+# and the refusal now NAMES the new remedy); WITH it, the PINNED tree's reclass-live-config runs
+# --accept BEFORE sync-seams (full summary + manifest backup printed = the audit trail), the evolved
+# seam keeps its org bytes (governance only — content is precisely what must survive), and the pull
+# completes green including its auto-preflight (#8 no longer whole-file-hashes a live-config entry).
+read -r RVCLONE RVAD _RVSNAP <<< "$(build_pull_case "$CORE")"
+RV_REG="$(mk)/adopters.json"
+printf '\n# ORG EVOLUTION — adopted at vA, evolved live since (the herdr-tg lesson)\n' >> "$RVAD/.kickoff/KICKOFF.md"
+RV_EVOLVED_SHA="$(sha256sum "$RVAD/.kickoff/KICKOFF.md" | awk '{print $1}')"
+RVMAN="$RVAD/.kickoff/adopt-manifest.json"
+RV_RC=0
+RV_OUT="$(KICKOFF_ADOPTERS_REGISTRY="$RV_REG" REPO_DIR="$RVAD" timeout 120 bash "$KICKOFF" pull core-vB 2>&1)" || RV_RC=$?
+chk "3b (refuse) WITHOUT the flag the pull still FAILS CLOSED (non-zero)"                  "[ $RV_RC -ne 0 ]"
+chk "3b (refuse) the refusal names the NEW remedy: --reclass-evolved"                       "printf '%s' \"\$RV_OUT\" | grep -q -- '--reclass-evolved'"
+chk "3b (refuse) the refusal still names --force-regenerate (the destructive hatch)"        "printf '%s' \"\$RV_OUT\" | grep -q -- '--force-regenerate'"
+chk "3b (refuse) the evolved seam is UNTOUCHED (refused, not overwritten)"                  "[ \"$RV_EVOLVED_SHA\" = \"\$(sha256sum "$RVAD/.kickoff/KICKOFF.md" | awk '{print \$1}')\" ]"
+chk "3b (refuse) the manifest entry is still class seam (nothing reclassed without the flag)" \
+  "python3 -c \"import json;e=[x for x in json.load(open('$RVMAN'))['entries'] if x['path']=='.kickoff/KICKOFF.md'][0];assert e['class']=='seam'\""
+
+# WITH the flag: reclass on the PINNED tool before sync-seams → the pull completes.
+RV2_REG="$(mk)/adopters.json"
+RV2_RC=0
+RV2_OUT="$(KICKOFF_ADOPTERS_REGISTRY="$RV2_REG" REPO_DIR="$RVAD" timeout 120 bash "$KICKOFF" pull --reclass-evolved core-vB 2>&1)" || RV2_RC=$?
+chk "3b (accept) the pull exits 0 with PULL OK"                                            "[ $RV2_RC -eq 0 ] && printf '%s' \"\$RV2_OUT\" | grep -q 'PULL OK'"
+chk "3b (accept) the summary printed the reclass step (the audit-trail line)"               "printf '%s' \"\$RV2_OUT\" | grep -qF 'reclassing org-evolved seams to live-config'"
+chk "3b (accept) the evolved seam is STILL the org's bytes (governance only)"               "[ \"$RV_EVOLVED_SHA\" = \"\$(sha256sum "$RVAD/.kickoff/KICKOFF.md" | awk '{print \$1}')\" ]"
+chk "3b (accept) the manifest entry is now class live-config" \
+  "python3 -c \"import json;e=[x for x in json.load(open('$RVMAN'))['entries'] if x['path']=='.kickoff/KICKOFF.md'][0];assert e['class']=='live-config'\""
+chk "3b (accept) a pre-reclass backup of the manifest exists in .kickoff/ (the audit trail)" "ls \"$RVAD/.kickoff/\" | grep -q 'adopt-manifest.json.pre-reclass-'"
+chk "3b (accept) the whole pull REALLY ran: the lock advanced to core-vB"                   "grep -q '^tag core-vB$' \"$RVAD/.kickoff/core.lock\""
+chk "3b (accept) the action field is UNCHANGED (eject's reversal behaviour intact)" \
+  "python3 -c \"import json;e=[x for x in json.load(open('$RVMAN'))['entries'] if x['path']=='.kickoff/KICKOFF.md'][0];assert e['action']=='created'\""
 echo
 
 # ══════════════════════════════════════════════════════════════════════════════════════
@@ -1694,6 +1735,128 @@ chk "drift guard: the tracked file was RESTORED to the pinned bytes (clone porce
 chk "drift guard: the git-ignored node_modules SURVIVED the restore (clean -fd, never -x)" \
   "[ -f \"$E2CLONE/memory-retrieval/node_modules/@xenova/transformers/package.json\" ]"
 
+# ── FIX-B lanes (the 2026-08-31 fleet incident) — same fixture idiom as the legs above ──
+# THE INCIDENT: a fresh clone ships NO memory-retrieval/node_modules (gitignored) and — on a
+# fresh box — NO durable/legacy model + NO semantic index, so --if-needed's in-use heuristic is
+# ALL-FALSE → "semantic not in use … nothing to recover" rc0 → the deps NEVER install → the
+# indexer picks the hashing stub → meta.semantic=false → recall surfaces nothing while every
+# pin/preflight check stays green. THE FIX: step 4f runs install-model --ensure (not --if-needed)
+# when the pinned tree LACKS node_modules/@xenova; a FAILED ensure is echoed in the pull's
+# bottom line with the keyword-only consequence + the exact remedies (advisory-loud — the DECIDED
+# fork — never fail-closed).
+
+# ── fix-B lane 1 [RED-first]: the FRESH-CLONE shape — the pull must ENSURE the deps ──
+# KICKOFF_EMBED_PROBE=0 keeps the lane hermetic (a fixture cannot embed for real — the
+# shim-planted package is a stub) and narrows the ensure to RESOLUTION-ONLY: the lane asserts the
+# part the PULL owns — deps EXIST after the pull + NO false keyword-only bottom line. The runtime
+# probe itself is unit-proven in lane 3 against a REAL copied stack.
+read -r F1CLONE F1AD _F1SNAP <<< "$(build_pull_case "$MCORE")"
+F1SHIM="$(mk)"; F1SENT="$(mk)"; F1MDL="$(mk)"; F1REG="$(mk)/adopters.json"
+write_pm_shims "$F1SHIM" ok "$F1SENT"
+F1RC=0
+F1OUT="$(KICKOFF_ADOPTERS_REGISTRY="$F1REG" REPO_DIR="$F1AD" PATH="$F1SHIM:$PATH" \
+  KICKOFF_MODEL_DIR="$F1MDL" KICKOFF_MODEL_OFFLINE=1 KICKOFF_EMBED_PROBE=0 MEMORY_DB="$(mk)/no-such.db" \
+  bash "$KICKOFF" pull core-vB 2>&1)" || F1RC=$?
+chk "fix-B lane 1 [RED pre-fix — THE FLEET SHAPE]: the pull ENSURED the deps into the fresh clone (node_modules/@xenova EXISTS in the work dir)" \
+  "[ -e \"$F1CLONE/memory-retrieval/node_modules/@xenova/transformers/package.json\" ]"
+chk "fix-B lane 1: the pull stays GREEN + pin-coherent (4f is advisory — rc0 + PULL OK)" \
+  "[ $F1RC -eq 0 ] && printf '%s' \"\$F1OUT\" | grep -q 'PULL OK'"
+chk "fix-B lane 1: NO keyword-only warning in the output (the ensure SUCCEEDED — no false alarm)" \
+  "! printf '%s' \"\$F1OUT\" | grep -q 'KEYWORD-ONLY'"
+chk "fix-B lane 1: the clone is git-CLEAN after the ensure (porcelain EMPTY — the sandbox invariant holds)" \
+  "[ -z \"\$(git -C \"$F1CLONE\" status --porcelain)\" ]"
+
+# ── fix-B lane 2: a HOSTILE env — the ensure FAILS → the pull still exits 0, but the failure is
+#    UNMISSABLE: the bottom line names the keyword-only consequence + install-model --ensure + the
+#    node@22 remedy. Deterministic lever: KICKOFF_MODEL_OFFLINE=1 with NO model anywhere → the
+#    ensure installs the deps (proving it RAN) then fails at the fetch — an air-gapped box. ──
+read -r F2CLONE F2AD _F2SNAP <<< "$(build_pull_case "$MCORE")"
+F2SHIM="$(mk)"; F2SENT="$(mk)"; F2MDL="$(mk)"; F2REG="$(mk)/adopters.json"
+write_pm_shims "$F2SHIM" ok "$F2SENT"        # the deps install SUCCEEDS — the failure is the fetch
+F2RC=0
+F2OUT="$(KICKOFF_ADOPTERS_REGISTRY="$F2REG" REPO_DIR="$F2AD" PATH="$F2SHIM:$PATH" \
+  KICKOFF_MODEL_DIR="$F2MDL" KICKOFF_MODEL_OFFLINE=1 MEMORY_DB="$(mk)/no-such.db" \
+  bash "$KICKOFF" pull core-vB 2>&1)" || F2RC=$?
+chk "fix-B lane 2: the pull STILL exits 0 (the advisory posture — an ensure failure never fails the pull)" \
+  "[ $F2RC -eq 0 ] && printf '%s' \"\$F2OUT\" | grep -q 'PULL OK'"
+chk "fix-B lane 2 [RED pre-fix]: the bottom line NAMES the consequence — recall is KEYWORD-ONLY and will surface nothing on most turns" \
+  "printf '%s' \"\$F2OUT\" | grep -q 'surface nothing on most turns'"
+chk "fix-B lane 2 [RED pre-fix]: the bottom line names the install-model --ensure remedy" \
+  "printf '%s' \"\$F2OUT\" | grep -q 'install-model.mjs --ensure'"
+chk "fix-B lane 2 [RED pre-fix]: the bottom line names the node@22 remedy (the alpha-node box)" \
+  "printf '%s' \"\$F2OUT\" | grep -q 'mise exec node@22'"
+chk "fix-B lane 2: the deps were STILL ensured before the fetch failed (the pull did its part)" \
+  "[ -e \"$F2CLONE/memory-retrieval/node_modules/@xenova/transformers/package.json\" ]"
+
+# ── fix-B lane 2b [RED-first]: the PRESENT-but-BROKEN tree — @xenova RESOLVES but sharp's native
+#    binary is MISSING (the exact incident shape on an already-cloned tree, where the resolution
+#    checks all stay green). The 4f mode-select keyed on @xenova's ABSENCE only, so this tree got
+#    --if-needed (resolution-only, never probes) and recall silently ran keyword-only. The select
+#    must run --ensure here too; the lane asserts the BEHAVIOR (the pull's unmissable bottom
+#    line), not the internals. Env mirrors lane 2: deps install ok, then the offline fetch fails
+#    → the bottom line fires. ──
+read -r F2BCLONE F2BAD _F2BSNAP <<< "$(build_pull_case "$MCORE")"
+F2BSHIM="$(mk)"; F2BSENT="$(mk)"; F2BMDL="$(mk)"; F2BREG="$(mk)/adopters.json"
+write_pm_shims "$F2BSHIM" ok "$F2BSENT"
+# the broken tree: a RESOLVABLE @xenova stub (so the fresh-clone trigger never fires) + NO sharp
+# native binary anywhere under node_modules.
+mkdir -p "$F2BCLONE/memory-retrieval/node_modules/@xenova/transformers"
+printf '{"name":"@xenova/transformers","main":"index.js"}\n' \
+  > "$F2BCLONE/memory-retrieval/node_modules/@xenova/transformers/package.json"
+: > "$F2BCLONE/memory-retrieval/node_modules/@xenova/transformers/index.js"
+F2BRC=0
+F2BOUT="$(KICKOFF_ADOPTERS_REGISTRY="$F2BREG" REPO_DIR="$F2BAD" PATH="$F2BSHIM:$PATH" \
+  KICKOFF_MODEL_DIR="$F2BMDL" KICKOFF_MODEL_OFFLINE=1 MEMORY_DB="$(mk)/no-such.db" \
+  bash "$KICKOFF" pull core-vB 2>&1)" || F2BRC=$?
+chk "fix-B lane 2b [RED pre-fix — THE BROKEN-PRESENT TREE]: the pull STILL exits 0 (the advisory posture)" \
+  "[ $F2BRC -eq 0 ] && printf '%s' \"\$F2BOUT\" | grep -q 'PULL OK'"
+chk "fix-B lane 2b [RED pre-fix]: the broken tree got ENSURED — the bottom line names the keyword-only consequence" \
+  "printf '%s' \"\$F2BOUT\" | grep -q 'surface nothing on most turns'"
+chk "fix-B lane 2b: the bottom line names the install-model --ensure remedy" \
+  "printf '%s' \"\$F2BOUT\" | grep -q 'install-model.mjs --ensure'"
+
+# ── fix-B lane 3 (unit): the --ensure FUNCTIONAL PROBE against a REAL stack — copied, never the
+#    live tree. Skipped gracefully where this box has no real deps + durable model (the same
+#    posture as the EXDEV leg). Measured 2026-09-01: the transformers.js module graph EAGERLY
+#    loads sharp (`import sharp from 'sharp'`, src/utils/image.js:16) — removing sharp's .node
+#    binary kills a TEXT embed too, so the sabotage is exactly the fleet's unextracted-binary
+#    shape: green resolution, dead runtime. ──
+if [ -f "$REPO/memory-retrieval/node_modules/@xenova/transformers/package.json" ] \
+   && [ -f "${KICKOFF_MODEL_DIR:-$HOME/.cache/kickoff-models}/Xenova/all-MiniLM-L6-v2/config.json" ]; then
+  U_MDL="${KICKOFF_MODEL_DIR:-$HOME/.cache/kickoff-models}"
+  # (a) the GOOD copy: the probe embed really runs and passes; the clone stays clean
+  U_GOOD="$(build_mr_clone)"
+  cp -a "$REPO/memory-retrieval/node_modules" "$U_GOOD/memory-retrieval/node_modules"
+  U1RC=0
+  U1OUT="$(KICKOFF_MODEL_DIR="$U_MDL" MEMORY_DB="$(mk)/no-such.db" \
+    node "$U_GOOD/memory-retrieval/install-model.mjs" --ensure 2>&1)" || U1RC=$?
+  chk "fix-B unit (a): --ensure on a REAL stack exits 0 with the probe-embed verdict" \
+    "[ $U1RC -eq 0 ] && printf '%s' \"\$U1OUT\" | grep -q 'probe embed OK'"
+  chk "fix-B unit (a): the clone stays git-CLEAN (porcelain EMPTY)" \
+    "[ -z \"\$(git -C \"$U_GOOD\" status --porcelain)\" ]"
+  # (b) the SABOTAGED copy: sharp's native binary removed from the COPY (never the live tree) —
+  #     the probe must FAIL LOUDLY, naming both remedies.
+  U_BAD="$(build_mr_clone)"
+  cp -a "$REPO/memory-retrieval/node_modules" "$U_BAD/memory-retrieval/node_modules"
+  rm -f "$U_BAD/memory-retrieval/node_modules/sharp/build/Release/"*.node \
+        "$U_BAD/memory-retrieval/node_modules/sharp/build/Release/obj.target/"*.node
+  U2RC=0
+  U2OUT="$(KICKOFF_MODEL_DIR="$U_MDL" MEMORY_DB="$(mk)/no-such.db" \
+    node "$U_BAD/memory-retrieval/install-model.mjs" --ensure 2>&1)" || U2RC=$?
+  chk "fix-B unit (b) [RED pre-fix]: a green-resolution stack with a DEAD native side → --ensure exits 1 ('FAILED a real embed')" \
+    "[ $U2RC -eq 1 ] && printf '%s' \"\$U2OUT\" | grep -q 'FAILED a real embed'"
+  chk "fix-B unit (b): the failure names remedy (1) — re-run the staged installer (it does the install CORRECTLY)" \
+    "printf '%s' \"\$U2OUT\" | grep -q 'install-model.mjs --ensure'"
+  chk "fix-B unit (b): the failure names remedy (2) — a PLAIN pnpm install (the workspace allowlist is honored)" \
+    "printf '%s' \"\$U2OUT\" | grep -q 'pnpm install'"
+  chk "fix-B unit (b): the heal lines NEVER re-suggest --ignore-workspace (it SKIPS the workspace allowlist — the exact fleet incident, re-created by the old heal text)" \
+    "! printf '%s' \"\$U2OUT\" | grep 'heal (' | grep -q -- '--ignore-workspace'"
+  chk "fix-B unit (b): the failure names remedy (3) — the node@22 alpha-node box" \
+    "printf '%s' \"\$U2OUT\" | grep -q 'mise exec node@22'"
+else
+  echo "  (no real memory-retrieval deps or durable model on this box — skipping the fix-B unit lanes)"
+fi
+
 # ── suite hygiene: §16's fixtures leaked NOTHING into the invoker's tree — the exact incident
 #    (a planted stub node_modules at the repo root) can never recur silently. ──
 chk "suite hygiene: §16 planted NO stub node_modules at the suite caller's cwd (the repo-root-residue shape)" \
@@ -2056,7 +2219,33 @@ PULLSURFACE
   #     · _strip_model_pin is a pure text transform on DELIVERED charter bytes (drops YAML
   #       `model:` lines — a pin silently wedges sessions on boxes without that provider);
   #       no v0.6-era seam path is a charter, so no pre-existing template byte changes.
-  XV_BLESSED="00e15b9d511444b106dddbf0b4f4128f0845b2f1255a70e5b77334e48c570049"
+  #   1f2ac203…  core-v1.0.1-alpha candidate · commits e702628 + ac96cad/afe3985 + f4c878b,
+  #     reviewed as one delta over the blessed 00e15b9d state. SINGLE-REVIEWER (coordinator
+  #     inline, 2026-08-31): the lane/task dispatch paths were degraded this session, so the
+  #     independent second lens v0.42 had did NOT happen — flagged here rather than implied.
+  #     WHAT MOVED (extractor-verified vs core-v0.42/00e15b9d — membership diff shows
+  #     ADDITIONS ONLY, no 'd'/'c' hunks; digest moved also via bodies):
+  #     · ONE added closure member: _CACHE_VENDOR_BOOKKEEPING (e702628) — inert data, the
+  #       frozenset({".orphaned_at"}) ignore extracted from an inline literal into a named
+  #       constant; consumed only by _fileset_manifest(cache_dir, ignore_top=…) inside
+  #       plugin-cache-verify. Behavior byte-identical (the ignore existed pre-extraction;
+  #       pull-selftest leg (b) lanes were RED-proven on the pre-extraction tool).
+  #     · BODY changes, all output/template text: _MC_SHIM/_SCAN_SECRETS_SHIM/
+  #       _SCAN_STRUCTURE_SHIM (f4c878b) — the missing-component branch now DISTINGUISHES a
+  #       resolving core that omits the component (public line; never suggests pull) from a
+  #       missing core dir (pull genuinely fixes it); still fails closed rc=1 on every
+  #       branch; proven by adopt-selftest's public-line lanes (429/0). Old-adopter safety:
+  #       sync-seams runs the PINNED tag's own tool, so the new text lands only on a pull of
+  #       a tag carrying it; seams are output-only rewrites gated on the recorded hash
+  #       contract (unchanged).
+  #     · BODY changes, keyed-lookup insertions only: FILE_SEAM_TEMPLATES + seam_template_for
+  #       learn the gen-opencode sources (ac96cad/afe3985) — same shape, same reachability
+  #       argument as the blessed 00e15b9d entry (reconcile is not one of the 6 pull verbs;
+  #       pre-gen-opencode manifests contain no .opencode rows so the branches are
+  #       unreachable for every adopter that exists).
+  #     ZERO members removed or re-pointed, ZERO dispatch changes, arg-surface byte-identical
+  #     (this suite's own adjacent check).
+  XV_BLESSED="1f2ac203f10bc7c9f922ef959a8e9b21c14d25000331192032140d2e958e4fd8"
   chk "FROZEN CONTRACT: adopt-manifest.py's PULL-RELEVANT dispatch+implementation surface (the 6 verbs a v0.6 cmd_pull invokes, the handler each one DISPATCHES to, + everything they reach) is byte-identical to core-v0.6's OR a blessed reviewed delta — additive verbs are FREE" \
     "[ -n \"$XVSURF_OLD\" ] && [ -n \"$XVSURF_NEW\" ] && { [ \"$XVSURF_OLD\" = \"$XVSURF_NEW\" ] || [ \"$XVSURF_NEW\" = \"$XV_BLESSED\" ]; }"
   if [ "$XVSURF_OLD" != "$XVSURF_NEW" ]; then

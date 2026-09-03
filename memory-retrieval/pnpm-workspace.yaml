@@ -1,3 +1,13 @@
+# pnpm >= 10 blocks dependency build scripts until allowlisted — sharp's native binary is never
+# extracted otherwise, and the first real embed dies on a missing .node (the 2026-08-31 fleet
+# incident; reproduced on pnpm 10.13.1, 2026-09-01). TWO SYNTAXES, ONE MEANING — keep BOTH until
+# the fleet's pnpm floor is uniformly >= 11:
+#   onlyBuiltDependencies — the pnpm 10 list form (10.x IGNORES the allowBuilds map below —
+#     measured: "Ignored build scripts: protobufjs, sharp" with the map alone);
+#   allowBuilds — the pnpm 11 map form (10.x tolerates the unknown key).
+onlyBuiltDependencies:
+  - protobufjs
+  - sharp
 allowBuilds:
   protobufjs: true
   sharp: true

@@ -245,6 +245,11 @@ KICKOFF_DIR="$REPO_DIR/.kickoff"
 _INSTANCE_ENV_WHITELIST="REPO_DIR KICKOFF_CORE_DIR MC_STATE_FILE MC_TRACKER_FILE MEMORY_DB MEMORY_HOOK_LOG MEMORY_DIR MEMORY_INDEX TELEGRAM_STATE_DIR CHANNEL_SPEC REGROUND_PROMPT MODEL EFFORT MAX_CONCURRENT_AGENTS DEPLOY_BRANCH CADENCE AUTO_PICKUP WORKER_ENGINE OPENCODE_MODEL_PROVIDER OPENCODE_MODEL_ID"
 load_instance_env() {
   local f="${1:-}"
+  # Names THIS load actually imported from the file (space-separated, always defined — even when
+  # the file is missing) — as opposed to names that were pre-set in the env and kept. cmd_up reads
+  # it after a --dir redirect: a file-sourced launch var is a FILE value, not a terminal pre-set,
+  # so it must be re-resolved from the TARGET org's file rather than riding in as a pre-set.
+  _INSTANCE_ENV_FROM_FILE=" "
   [ -n "$f" ] && [ -f "$f" ] || return 0
   # names ALREADY set in this shell (pre-set env / argv) — the file must never override them
   local n preset=" "
@@ -271,6 +276,7 @@ load_instance_env() {
     case " $_INSTANCE_ENV_WHITELIST " in *" $name "*) ;; *) continue ;; esac  # whitelisted only
     case "$preset" in *" $name "*) continue ;; esac                          # pre-set / argv wins
     eval "export $line"
+    _INSTANCE_ENV_FROM_FILE="$_INSTANCE_ENV_FROM_FILE$name "
   done <<< "$kv" || true
   return 0
 }
@@ -308,6 +314,29 @@ _channel_of_repo() {
   ) || true
 }
 
+# Read the TARGET org's LAUNCH config (EFFORT MODEL CADENCE AUTO_PICKUP) from ITS instance.env,
+# immune to the CALLER's env — the same scoped-subshell idiom as _channel_of_repo / cmd_pull
+# ("loads it from instance.env itself in a scoped subshell"): pin cwd + REPO_DIR to the repo being
+# read, unset the names first (ambient values must never impersonate the file's), source ONLY the
+# target's file, and print the names it sets. cmd_up uses this to re-resolve launch vars that were
+# sourced from the CALLER's file after a --dir redirect — they are file values, not pre-sets.
+_target_launch_config() {
+  local repo="$1" env_file="$1/.kickoff/instance.env"
+  [ -f "$env_file" ] || return 0
+  (
+    cd "$repo" 2>/dev/null || return 0
+    unset EFFORT MODEL CADENCE AUTO_PICKUP
+    REPO_DIR="$repo"; export REPO_DIR
+    set +u
+    # shellcheck disable=SC1090
+    . "$env_file" >/dev/null 2>&1 || true
+    local n
+    for n in EFFORT MODEL CADENCE AUTO_PICKUP; do
+      [ -n "${!n+x}" ] && printf '%s=%q\n' "$n" "${!n}"
+    done
+  ) || true
+}
+
 INSTANCE_ENV="${INSTANCE_ENV:-$KICKOFF_DIR/instance.env}"
 load_instance_env "$INSTANCE_ENV"
 
@@ -335,7 +364,7 @@ die() { printf '[kickoff] ERROR: %s\n' "$*" >&2; exit 1; }
 # scripts/remote-normalize-selftest.sh; do not "simplify" this back to `${u#*@}`.
 #
 # KNOWN, DELIBERATELY UNFIXED: `ssh://https://host/org/repo` collides with the canonical form, because
-# the scheme strips are sequential and both fire. Left alone on an adopter coordinator's reasoning (review
+# the scheme strips are sequential and both fire. Left alone on the Bliz coordinator's reasoning (review
 # of core-v0.16, 2026-07-22), which is right: this guard defends against an ACCIDENT — a stray clone, a
 # stale KICKOFF_CORE_REMOTE. It cannot defend against an adversary who controls $core_dir, because that
 # adversary can simply `git remote set-url origin` to the exact canonical URL. Exotic-URL hardening past
@@ -977,9 +1006,13 @@ sys.exit(0 if ok else 1)' "$oc" 2>/dev/null; then
 }
 
 cmd_pull() {
-  # parse: [--force-regenerate] [<tag>]. --force-regenerate is the seam-sync escape hatch
-  # (§2.3 item 2) — it DISCARDS a hand-edited seam + restores the pinned template on this pull.
-  local tag_arg="" force_regen=0
+  # parse: [--force-regenerate] [--reclass-evolved] [<tag>]. --force-regenerate is the seam-sync
+  # escape hatch (§2.3 item 2) — it DISCARDS a hand-edited seam + restores the pinned template on
+  # this pull. --reclass-evolved is the NON-destructive alternative: org-evolved seams (bytes
+  # diverged from the recorded hash, or carrying no recorded hash — a superset of sync-seams'
+  # refusal set, every candidate printed) are reclassed seam → live-config
+  # (governance only; content preserved, manifest backup written) BEFORE the sync.
+  local tag_arg="" force_regen=0 reclass_evolved=0
   while [ $# -gt 0 ]; do
     case "$1" in
       # pull also ignored --dir (see _set_repo_dir_from_argv) — `kickoff pull --dir <repo>` is the
@@ -988,9 +1021,10 @@ cmd_pull() {
       --dir)              shift; [ $# -gt 0 ] || die "pull: --dir needs a path"; _set_repo_dir_from_argv "$1"; shift ;;
       --dir=*)            _set_repo_dir_from_argv "${1#--dir=}"; shift ;;
       --force-regenerate) force_regen=1; shift ;;
+      --reclass-evolved)  reclass_evolved=1; shift ;;
       -h|--help) usage; return 2 ;;
-      --*) die "pull: unknown flag '$1' (usage: kickoff pull [--force-regenerate] [<tag>])" ;;
-      *) [ -z "$tag_arg" ] || die "pull: unexpected extra argument '$1' (usage: kickoff pull [--force-regenerate] [<tag>])"
+      --*) die "pull: unknown flag '$1' (usage: kickoff pull [--force-regenerate] [--reclass-evolved] [<tag>])" ;;
+      *) [ -z "$tag_arg" ] || die "pull: unexpected extra argument '$1' (usage: kickoff pull [--force-regenerate] [--reclass-evolved] [<tag>])"
          tag_arg="$1"; shift ;;
     esac
   done
@@ -1270,6 +1304,22 @@ cmd_pull() {
   local seam_tool="$work_dir/scripts/adopt-manifest.py"
   local adopt_manifest="$KICKOFF_DIR/adopt-manifest.json"
   if [ -f "$adopt_manifest" ] && [ -f "$seam_tool" ]; then
+    # 4b-pre. --reclass-evolved — the sanctioned escape for ORG-EVOLVED seams (hit live 2026-08-31:
+    #     three orgs repaired BY HAND with exactly this manifest edit). Runs the PINNED tree's
+    #     reclass-live-config BEFORE sync-seams, so evolved seams (class=seam whose bytes diverged
+    #     from the recorded sha256_at_write, or that carry no recorded hash — a superset of
+    #     sync-seams' refusal set) leave the walk as live-config. GOVERNANCE ONLY: file bytes
+    #     untouched, every other entry field preserved, a
+    #     timestamped manifest backup written first (the printed path is the audit trail). Without
+    #     the flag this step is skipped and the pull is byte-behaviour-identical.
+    if [ "$reclass_evolved" = "1" ]; then
+      log "reclass-evolved: reclassing org-evolved seams to live-config (content preserved; manifest backup written)…"
+      local _rlc_rc=0
+      python3 "$seam_tool" reclass-live-config --repo "$REPO_DIR" --accept || _rlc_rc=$?
+      if [ "$_rlc_rc" -ne 0 ]; then
+        die "reclass-evolved FAILED (rc $_rlc_rc) — see the tool's error above; the pull is aborted (the pre-reclass manifest backup remains in $KICKOFF_DIR/)."
+      fi
+    fi
     log "syncing manifest-listed seams to $tag…"
     local -a seam_args=(sync-seams --repo "$REPO_DIR" --source "$tag")
     [ "$force_regen" = "1" ] && seam_args+=(--force-regenerate)
@@ -1280,7 +1330,7 @@ cmd_pull() {
     local _ss_rc=0
     python3 "$seam_tool" "${seam_args[@]}" || _ss_rc=$?
     if [ "$_ss_rc" -eq 1 ]; then
-      die "seam sync REFUSED — a hand-edited seam blocks the pull (see the diff above). Restore the seam and retry, or overwrite it:  kickoff pull --force-regenerate $tag"
+      die "seam sync REFUSED — a hand-edited seam blocks the pull (see the diff above). Restore the seam and retry, or overwrite it:  kickoff pull --force-regenerate $tag  — or re-run with --reclass-evolved to reclass org-evolved seams to live-config (content preserved, backup written)"
     elif [ "$_ss_rc" -ne 0 ]; then
       die "seam sync FAILED (rc $_ss_rc) — NOT a hand-edited-seam refusal; see the tool's error above. A 'template missing' FATAL means the pinned checkout at $work_dir is incomplete (that abort happens BEFORE any seam is written). The pull is aborted."
     fi
@@ -1477,11 +1527,40 @@ except Exception:
   #     reinstalls deps + fetches the model only when semantic WAS in use. ADVISORY: never fails
   #     the pull — recovery is idempotent and re-runnable any time. (A tag predating the helper
   #     simply skips — same inert-skip posture as seam-sync/plugin-resync above.)
+  #
+  #     FIX B (the 2026-08-31 fleet incident): --if-needed's in-use heuristic is ALL-FALSE on a
+  #     FRESH CLONE (no pkg, no durable/legacy model, no semantic index) → "nothing to recover"
+  #     rc0 → the deps never install → the indexer picks the hashing stub → meta.semantic=false →
+  #     recall surfaces nothing while every check stays green. When the pinned tree LACKS
+  #     memory-retrieval/node_modules/@xenova (the fresh-clone shape), run --ensure instead: the
+  #     full staged install + model fetch + a functional embed probe, skipped ONLY when
+  #     MEMORY_EMBEDDER steers away. Still advisory-never-fails-the-pull (the DECIDED fork:
+  #     advisory-loud, not fail-closed) — but a FAILED ensure is echoed in the bottom-line block
+  #     below with the consequence + the exact remedies (silent keyword-only recall is the one
+  #     failure nobody re-checks). Without the missing-deps condition, behavior is identical.
   local model_tool="$work_dir/memory-retrieval/install-model.mjs"
+  local ensure_failed=0
   if [ -f "$model_tool" ] && command -v node >/dev/null 2>&1; then
     log "semantic-model durability check (memory retrieval)…"
-    if ! REPO_DIR="$REPO_DIR" node "$model_tool" --if-needed; then
+    local model_mode="--if-needed"   # byte-compat default: deps present → the fast heuristic
+    if [ ! -e "$work_dir/memory-retrieval/node_modules/@xenova" ]; then
+      model_mode="--ensure"          # the fresh-clone shape: the deps MUST be ensured (fix B)
+    else
+      # fix B, second shape: @xenova PRESENT but the tree RUNTIME-DEAD — sharp's native binary
+      # never extracted (pnpm >= 10 blocks build scripts until allowlisted). Resolution-only
+      # --if-needed passes that tree green and recall silently runs keyword-only, so the missing
+      # .node must select --ensure too (the probe is what sees it). One cheap find covers the
+      # layouts (build/Release on npm, .pnpm/… on pnpm); .cache (the legacy model cache) is
+      # pruned so the walk stays shallow.
+      if [ -z "$(find "$work_dir/memory-retrieval/node_modules" \( -name .cache -prune \) -o -type f \( -name 'sharp-linux*.node' -o -name 'sharp-darwin*.node' \) -print 2>/dev/null | head -n 1)" ]; then
+        model_mode="--ensure"        # broken-native shape: deps resolved, runtime gone → ensure
+      fi
+    fi
+    if ! REPO_DIR="$REPO_DIR" node "$model_tool" "$model_mode"; then
       printf '[kickoff] ⚠ semantic-model recovery incomplete — memory retrieval runs KEYWORD-ONLY until healed:  node %s\n' "$model_tool" >&2
+      if [ "$model_mode" = "--ensure" ]; then
+        ensure_failed=1              # echoed, with remedies, in the bottom-line block below
+      fi
     fi
     # DRIFT GUARD (complement, NOT the fix): install-model's dep install is sandboxed OUT of the
     # clone (the root-cause fix for pnpm >= 10 mutating its tracked pnpm-workspace.yaml config
@@ -1560,6 +1639,12 @@ except Exception:
     log "→ Pin problem — do NOT restart the worker (the pinned core did not verify; see the report above)."
   else
     log "→ Read the report above before restarting: a #6/#8 failure IS a pin problem (do NOT restart), but a session-readiness failure (e.g. a live worker) is not — this old tag's preflight can't tell them apart here."
+  fi
+  # FIX B (2026-08-31 fleet): a FAILED semantic-model ensure is advisory (never fails the pull)
+  # but must be UNMISSABLE — its consequence is recall that silently surfaces nothing. Wording
+  # precedent: the verify semantic-memory ⚠ lines (KEYWORD-ONLY + the install-model remedy).
+  if [ "$ensure_failed" -eq 1 ]; then
+    log "→ ⚠ semantic-memory recovery FAILED — recall is KEYWORD-ONLY and will surface nothing on most turns. Heal:  node $model_tool --ensure   ·  if this box's default node is a pre-release (alpha):  mise exec node@22 -- node $model_tool --ensure"
   fi
   return "$pf_rc"
 }
@@ -5869,33 +5954,51 @@ sys.exit(0 if s.get("enabledPlugins",{}).get(sys.argv[2]) is True else 1)' "$_se
       ''|*[!0-9]*) mark_warn "node present but its version is unparseable ('${_nv:-?}') — ensure node ≥ 22"; warns=$((warns+1)) ;;
       *) if [ "${_nv%%.*}" -ge 22 ]; then
            mark_ok "node present ($_nv ≥ 22)"
-           # ── semantic-memory FUNCTION probe (prove FUNCTION, not mere presence) ──────
-           # node≥22 only means semantic COULD run. Prove it actually CAN by reusing the
-           # CANONICAL semanticAvailability() check IN THE PINNED CORE ($core_dir — never
-           # the adopter's $target; a pull adopter's own repo carries no engine). ADVISORY
-           # ONLY: keyword-only retrieval is a legitimate, fully-working mode, so a model
-           # that isn't built yet is an amber ⚠, NEVER a hard ✗ — verify must stay exit-0/
-           # GREEN (other selftests assert that contract). A probe error / timeout / any
-           # non-"true" output is treated the same advisory way and NEVER flips the exit.
-           local _emb="$core_dir/memory-retrieval/lib/embeddings.mjs" _sem=""
-           # Inert-skip a core that PREDATES this probe — no embeddings.mjs at all (a pre-module
-           # tag → the -f guard), OR an embeddings.mjs without the semanticAvailability export (an
-           # older pinned core, e.g. ~/kickoff-core still on an early tag → the 'absent' sentinel).
-           # Either way print NOTHING: an old engine must not read as a degraded one (that spurious
-           # amber is the exact misleading signal this honesty check exists to remove).
-           if [ -f "$_emb" ]; then
-             local _probe="import('file://$_emb').then(m=>console.log(typeof m.semanticAvailability==='function'?m.semanticAvailability().available:'absent')).catch(()=>console.log('err'))"
-             if command -v timeout >/dev/null 2>&1; then
-               _sem="$(timeout 20 node --input-type=module -e "$_probe" 2>/dev/null || true)"
-             else
-               _sem="$(node --input-type=module -e "$_probe" 2>/dev/null || true)"
-             fi
-             case "$_sem" in
-               true)   mark_ok "semantic memory ACTIVE (durable embeddings)" ;;
-               false)  mark_warn "semantic memory not built yet — retrieval runs keyword-only (fine); run \`node $core_dir/memory-retrieval/install-model.mjs\` to enable semantic"; warns=$((warns+1)) ;;
-               absent) : ;;
-               *)      mark_warn "semantic memory could not be probed (retrieval runs keyword-only, which is fine) — run \`node $core_dir/memory-retrieval/install-model.mjs\` to build/verify it"; warns=$((warns+1)) ;;
+           # ── semantic-memory STATE check (verdict from CONSUMED state, not presence) ──
+           # The old probe asked the PINNED CORE's semanticAvailability() — the model dir +
+           # node_modules — and answered "✓ semantic memory ACTIVE (durable embeddings)" on orgs
+           # whose OWN index is keyword-only (measured 2026-08-31 on a live adopter: ACTIVE green
+           # with meta.embedder_semantic=false and zero vector rows — exactly the green a
+           # coordinator will not re-check; dependency presence ≠ embeddings existing). The
+           # verdict now reads the org's OWN memory DB (MEMORY_DB as instance.env stamps it, else
+           # the instance.env.example default location) through the same node:sqlite access the
+           # rest of this repo's bash uses: ACTIVE only when meta.embedder_semantic=true AND the
+           # vectors table is non-empty — the same two facts index.mjs's writeMeta records for
+           # honesty. Still ADVISORY ONLY: keyword-only retrieval is a legitimate, fully-working
+           # mode, so every non-ACTIVE verdict is an amber ⚠ and NEVER flips the exit (verify
+           # stays exit-0/GREEN; model-durability-selftest §7 asserts that contract).
+           local _mdb="" _mrow=""
+           if [ -n "${MEMORY_DB:-}" ] && [ -s "$MEMORY_DB" ]; then
+             _mdb="$MEMORY_DB"
+           else
+             for _mdb in "$target/.kickoff/state/memory-retrieval/memory-index.db" \
+                         "$target/.kickoff/state/memory-index.db"; do
+               [ -s "$_mdb" ] && break
+             done
+           fi
+           if [ -n "$_mdb" ] && [ -s "$_mdb" ]; then
+             # SELECT-only read; any error (corrupt/foreign file) degrades to the amber probe line.
+             _mrow="$(NODE_NO_WARNINGS=1 node --experimental-sqlite -e "
+               const {DatabaseSync}=require('node:sqlite');
+               const d=new DatabaseSync(process.argv[1]);
+               const m=d.prepare(\"SELECT value FROM meta WHERE key='embedder_semantic'\").get();
+               const v=d.prepare('SELECT COUNT(*) AS c FROM vectors').get();
+               console.log((m && m.value==='true' ? '1' : '0')+' '+v.c);" "$_mdb" 2>/dev/null || true)"
+             local _msem="${_mrow%% *}" _mvecs="${_mrow#* }"
+             case "$_mrow" in
+               [01]" "*)
+                 if [ "$_msem" = "1" ] && [ "${_mvecs:-0}" -gt 0 ] 2>/dev/null; then
+                   mark_ok "semantic memory ACTIVE (durable embeddings — $_mvecs vector row(s) in the org's own index)"
+                 elif [ "$_msem" = "1" ]; then
+                   mark_warn "semantic memory ABSENT — meta claims embedder_semantic but the vectors table is EMPTY (inconsistent index: a semantic embed pass wrote zero rows); recall still works via keyword arm — rebuild it: MEMORY_DIR=<corpus> node $core_dir/memory-retrieval/index.mjs"; warns=$((warns+1))
+                 else
+                   mark_warn "semantic memory ABSENT — index is keyword-only (stub-indexed or embedder missing); recall still works via keyword arm — run \`node $core_dir/memory-retrieval/install-model.mjs\` to enable semantic"; warns=$((warns+1))
+                 fi ;;
+               *)
+                 mark_warn "semantic memory could not be read — the org's index at $_mdb is unreadable/corrupt (retrieval runs keyword-only, which is fine) — run \`node $core_dir/memory-retrieval/install-model.mjs\` to build/verify it"; warns=$((warns+1)) ;;
              esac
+           else
+             mark_warn "semantic memory ABSENT — no memory index built yet (looked at ${MEMORY_DB:-$target/.kickoff/state/memory-retrieval/memory-index.db}; recall stays silent until one exists, and without the embedder it runs keyword-only) — \`kickoff adopt\` builds the index; \`node $core_dir/memory-retrieval/install-model.mjs\` enables semantic"; warns=$((warns+1))
            fi
          else
            mark_warn "node present ($_nv) but < 22 — the MC server + semantic memory need node ≥ 22"; warns=$((warns+1))
@@ -6449,15 +6552,20 @@ cmd_up() {
   # loaded before this point, so a value written there is a per-adopter policy that survives
   # every hop, and the turnkey needs no change to preserve it.
   local auto_pickup="${AUTO_PICKUP:-}"
-  local effort_argv=0 model_argv=0 detach=0 replace=0
+  # Did THIS invocation name a repo with --dir (argv is the user SPEAKING)? The top-level pre-scan
+  # re-pointed REPO_DIR before the instance.env load ever ran, so "did REPO_DIR change" is not
+  # askable here — but whether the file the load read is the TARGET's own is, and the --dir flag
+  # marks the runs where a foreign file's launch vars must be re-resolved (block below).
+  local up_dir_argv=0
+  local effort_argv=0 model_argv=0 cadence_argv=0 auto_pickup_argv=0 detach=0 replace=0
   while [ $# -gt 0 ]; do
     case "$1" in
       # `up` SILENTLY IGNORED --dir while its own not-your-repo error told you to "pass --dir".
       # Found 2026-07-16 by the operator: `kickoff up --dir ~/their-repo` → "REPO_DIR is unset … (or
       # pass --dir)". He had. Every new adopter's FIRST LAUNCH hit this, and the advice was a
       # dead end. adopt/eject/status/verify all parse it; up/pull/setup did not.
-      --dir)       shift; [ $# -gt 0 ] || die "up: --dir needs a path"; _set_repo_dir_from_argv "$1"; shift ;;
-      --dir=*)     _set_repo_dir_from_argv "${1#--dir=}"; shift ;;
+      --dir)       shift; [ $# -gt 0 ] || die "up: --dir needs a path"; _set_repo_dir_from_argv "$1"; up_dir_argv=1; shift ;;
+      --dir=*)     _set_repo_dir_from_argv "${1#--dir=}"; up_dir_argv=1; shift ;;
       --auto)      permission_mode="auto"; shift ;;
       --detach)    detach=1; shift ;;
       --replace)   replace=1; shift ;;
@@ -6465,15 +6573,83 @@ cmd_up() {
       --effort=*)  effort="${1#--effort=}"; effort_argv=1; shift ;;
       --model)     shift; [ $# -gt 0 ] || die "up: --model needs a model alias (e.g. sonnet|opus)"; model="$1"; model_argv=1; shift ;;
       --model=*)   model="${1#--model=}"; model_argv=1; shift ;;
-      --cadence)   shift; [ $# -gt 0 ] || die "up: --cadence needs a number of seconds"; cadence="$1"; shift ;;
-      --cadence=*) cadence="${1#--cadence=}"; shift ;;
-      --auto-pickup)    auto_pickup=1; shift ;;
-      --no-auto-pickup) auto_pickup=0; shift ;;
+      --cadence)   shift; [ $# -gt 0 ] || die "up: --cadence needs a number of seconds"; cadence="$1"; cadence_argv=1; shift ;;
+      --cadence=*) cadence="${1#--cadence=}"; cadence_argv=1; shift ;;
+      --auto-pickup)    auto_pickup=1; auto_pickup_argv=1; shift ;;
+      --no-auto-pickup) auto_pickup=0; auto_pickup_argv=1; shift ;;
       --dry-run)   dry=1; shift ;;
       -h|--help)   usage; return 2 ;;
       *) die "up: unknown arg '$1' (usage: kickoff up [--auto] [--effort <tier>] [--model <alias>] [--cadence <sec>] [--detach] [--replace] [--dry-run])" ;;
     esac
   done
+  # ── --dir launched ANOTHER org: re-resolve file-sourced launch vars from the TARGET's file ───
+  # The bindings above were read from the ambient env — including values the top-level
+  # instance.env import sourced from the CALLER org's file (INSTANCE_ENV rides ambient across the
+  # pty-wrap/hop topology). Appending them to `envs+=` below would make them PRE-SET names
+  # downstream, and session-run's preset-wins import would let them BEAT the target org's own
+  # instance.env — the caller org's effort pin / autonomy arm silently launching another org's
+  # worker. So: argv flags stand (checked first); a TRUE terminal pre-set stands (preset-wins is
+  # the seam's own rule); but a name this process sourced from a file (_INSTANCE_ENV_FROM_FILE)
+  # is a FILE value, not a pre-set — re-read it from the TARGET's file, falling back to the
+  # engine default when the target sets nothing. The gate is TWO conditions, both required:
+  # --dir was passed (no --dir → this block never runs, byte-identical to every run before it),
+  # and the file the top-level load actually read is NOT the target's own (with no ambient
+  # INSTANCE_ENV the pre-scan re-pointed REPO_DIR before that load, so the target's file was
+  # already what was read — nothing foreign to undo). Sits BEFORE the validations below so a
+  # re-resolved CADENCE passes through the SAME digit check as an argv CADENCE.
+  if [ "$up_dir_argv" = 1 ] && [ "${INSTANCE_ENV:-}" != "$REPO_DIR/.kickoff/instance.env" ]; then
+    local _tl _tn _tv
+    local _tgt_effort="" _tgt_model="" _tgt_cadence="" _tgt_pickup=""
+    local _have_effort=0 _have_model=0 _have_cadence=0 _have_pickup=0
+    while IFS= read -r _tl; do
+      [ -n "$_tl" ] || continue
+      _tn="${_tl%%=*}"
+      case "$_tn" in EFFORT|MODEL|CADENCE|AUTO_PICKUP) ;; *) continue ;; esac
+      # %q round-trip: _target_launch_config prints name=<printf %q value> — unquote by eval,
+      # the SAME import the top-level loader uses (printf %q output is safe to eval by
+      # construction; same trust level: the operator's own instance.env). A raw `${line#*=}`
+      # assignment shipped the quoting ITSELF: `my model` arrived as `my\ model` and "" as ''.
+      eval "_tv=${_tl#*=}"
+      case "$_tn" in
+        EFFORT)      _tgt_effort="$_tv";  _have_effort=1 ;;
+        MODEL)       _tgt_model="$_tv";   _have_model=1 ;;
+        CADENCE)     _tgt_cadence="$_tv"; _have_cadence=1 ;;
+        AUTO_PICKUP) _tgt_pickup="$_tv";  _have_pickup=1 ;;
+      esac
+    done <<< "$(_target_launch_config "$REPO_DIR")"
+    for _tn in EFFORT MODEL CADENCE AUTO_PICKUP; do
+      # an argv flag for this name has already won — it is never re-resolved
+      case "$_tn" in
+        EFFORT)      if [ "$effort_argv" = 1 ]; then continue; fi ;;
+        MODEL)       if [ "$model_argv" = 1 ]; then continue; fi ;;
+        CADENCE)     if [ "$cadence_argv" = 1 ]; then continue; fi ;;
+        AUTO_PICKUP) if [ "$auto_pickup_argv" = 1 ]; then continue; fi ;;
+      esac
+      # a name the top-level load did NOT take from a file was a true terminal pre-set (or was
+      # never set anywhere) — its current binding already obeys argv > pre-set env; leave it
+      case " $_INSTANCE_ENV_FROM_FILE " in *" $_tn "*) ;; *) continue ;; esac
+      case "$_tn" in
+        EFFORT)      if [ "$_have_effort" = 1 ]; then effort="$_tgt_effort"; else effort="high"; fi ;;
+        MODEL)       if [ "$_have_model" = 1 ]; then model="$_tgt_model"; else model=""; fi ;;
+        CADENCE)     if [ "$_have_cadence" = 1 ]; then cadence="$_tgt_cadence"; else cadence=""; fi ;;
+        AUTO_PICKUP) if [ "$_have_pickup" = 1 ]; then auto_pickup="$_tgt_pickup"; else auto_pickup=""; fi ;;
+      esac
+      # NEUTRALIZE the exported GLOBAL when the resolved value is empty. build_worker_env walks
+      # compgen -e and keeps KEEP-listed globals into the child (MODEL, EFFORT, …), while envs[]
+      # below appends MODEL/AUTO_PICKUP only when NON-empty — so a stale caller-file global
+      # would leak into the launch exactly when the resolved value is empty (re-resolving binds
+      # only the LOCAL; it never unsets what the top-level loader `eval export`ed). UNSET —
+      # never an empty string — keeps "unset ⇒ inherit the box config" true downstream
+      # (session-run: unset MODEL ⇒ no --model flag; an empty MODEL must never arrive).
+      case "$_tn" in
+        EFFORT)      if [ -z "$effort" ]; then unset EFFORT; fi ;;
+        MODEL)       if [ -z "$model" ]; then unset MODEL; fi ;;
+        CADENCE)     if [ -z "$cadence" ]; then unset CADENCE; fi ;;
+        AUTO_PICKUP) if [ -z "$auto_pickup" ]; then unset AUTO_PICKUP; fi ;;
+      esac
+    done
+  fi
+
   if [ -n "$cadence" ] && ! [[ "$cadence" =~ ^[0-9]+$ ]]; then
     die "up: --cadence must be a non-negative integer (seconds), got: $cadence"
   fi

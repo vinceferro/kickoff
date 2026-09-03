@@ -296,8 +296,11 @@ export class LocalEmbeddingProvider {
       transformers = await import("@xenova/transformers");
     } catch (err) {
       throw new Error(
-        `@xenova/transformers not installed (run \`pnpm install --ignore-workspace\` in ` +
-          `tools/memory-retrieval/). Underlying: ${err.message}`,
+        // NOT `pnpm install --ignore-workspace`: that flag skips pnpm-workspace.yaml
+        // ENTIRELY — including the sharp allowlist — and re-creates the fleet incident
+        // (green install, never-extracted native binary). Plain install reads the allowlist.
+        `@xenova/transformers not installed (run \`pnpm install\` in ` +
+          `memory-retrieval/, or \`node install-model.mjs --ensure\`). Underlying: ${err.message}`,
       );
     }
     // Read the offline knob BEFORE transformers' own `env` shadows the module

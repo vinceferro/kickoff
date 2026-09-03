@@ -146,6 +146,12 @@ chk "the port record persists BOTH assigned ports (stable URL across restarts)" 
   "grep -q '^BOARD_LOCAL_PORT=9101$' \"$F2REC\" && grep -q '^BOARD_TAILNET_PORT=8101$' \"$F2REC\""
 chk "the tailnet confirm ran 401-then-200 (the SKILL's step-3 both-codes assert)" \
   "printf '%s' \"\$f2_out\" | grep -q 'tailnet confirm PASSED'"
+# REVERT-DETECTOR (the ce5b40b motion, fifth site): curl reads ~/.curlrc BEFORE any option, so a
+# hostile trace-ascii there would capture the bearer token the -K - stdin recipe carries — `-q`
+# must stay curl's FIRST argument. Asserted against the LIVE run's recorded argv (consumed state,
+# the supervisor-liveness (R2) extraction): the `-K` line's first field.
+chk "curlrc GUARD: the TOKEN-bearing confirm's first curl argument is -q (a hostile ~/.curlrc can't trace the bearer)" \
+  "[ \"\$(awk '/ -K /{print \$1; exit}' \"$CURL_LOG\")\" = -q ]"
 chk "the handoff surfaces the URL" \
   "printf '%s' \"\$f2_out\" | grep -q 'https://testbox.ts.net:8101/'"
 chk "CREDENTIAL-GUARD: the token value is NEVER printed (operator cats it themselves)" \

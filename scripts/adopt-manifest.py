@@ -119,7 +119,10 @@ ORIGINAL_ACTIONS = ("modified", "block-appended", "json-merged")
 # there, gitignored) and execs the PINNED engine code. Because the content embeds NO machine
 # path, every adopter's shim is byte-identical → a stable hash the manifest pins and preflight
 # #8 checks. `gen-shim` writes + records it; `sync-seams` regenerates it from the new tag on
-# pull. A MISSING engine yields a CLEAR message + non-zero exit, never a raw bash error.
+# pull. A MISSING engine yields a CLEAR message + non-zero exit, never a raw bash error — and
+# the message DISTINGUISHES the two failures: a missing/pinned-core-dir (pull fixes it) from a
+# resolving core that does not carry the component (the ratified public release line omits
+# mission-control/ entirely — permanent, so the message names it and never suggests a pull).
 SHIM_DIR = ".kickoff/bin"
 
 _MC_SHIM = '''#!/usr/bin/env bash
@@ -138,9 +141,17 @@ export REPO_DIR="$(cd "$_here/../.." && pwd)"
 # TRACKER.md). Explicit values written IN instance.env still win.
 unset MC_STATE_FILE MC_TRACKER_FILE MEMORY_DB MEMORY_HOOK_LOG MEMORY_INDEX GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 [ -f "$_here/../instance.env" ] && . "$_here/../instance.env"
-_engine="${KICKOFF_CORE_DIR:-}/mission-control/mc-update.py"
+_engine_dir="${KICKOFF_CORE_DIR:-}"
+_engine="$_engine_dir/mission-control/mc-update.py"
 if [ ! -f "$_engine" ]; then
-  printf 'kickoff engine not present — see .kickoff/README\\n' >&2
+  if [ -n "$_engine_dir" ] && [ -d "$_engine_dir" ]; then
+    # The pinned core RESOLVES but does not carry this component: the ratified public release
+    # line ships WITHOUT mission-control/, so `kickoff pull` can NEVER fix this. Name the real
+    # state; never point the reader at a fix that cannot work. Still fails closed (rc 1).
+    printf 'this pinned core does not ship Mission Control (the public release line omits it) — MC status writes are unavailable through this shim; see .kickoff/README\\n' >&2
+  else
+    printf 'kickoff engine not present — see .kickoff/README\\n' >&2
+  fi
   exit 1
 fi
 exec python3 "$_engine" "$@"
@@ -162,9 +173,17 @@ export REPO_DIR="$(cd "$_here/../.." && pwd)"
 # TRACKER.md). Explicit values written IN instance.env still win.
 unset MC_STATE_FILE MC_TRACKER_FILE MEMORY_DB MEMORY_HOOK_LOG MEMORY_INDEX GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 [ -f "$_here/../instance.env" ] && . "$_here/../instance.env"
-_engine="${KICKOFF_CORE_DIR:-}/scripts/scan-secrets.sh"
+_engine_dir="${KICKOFF_CORE_DIR:-}"
+_engine="$_engine_dir/scripts/scan-secrets.sh"
 if [ ! -f "$_engine" ]; then
-  printf 'kickoff engine not present — run `kickoff pull` (see .kickoff/README)\\n' >&2
+  if [ -n "$_engine_dir" ] && [ -d "$_engine_dir" ]; then
+    # Unlike mission-control/, the scanners travel on the public release line — so a resolving
+    # core that lacks this component is an INCOMPLETE clone, and `kickoff pull` genuinely fixes
+    # it. Name the state precisely either way (dir missing vs component missing).
+    printf 'pinned core present but missing scripts/scan-secrets.sh — run `kickoff pull` (see .kickoff/README)\\n' >&2
+  else
+    printf 'kickoff engine not present — run `kickoff pull` (see .kickoff/README)\\n' >&2
+  fi
   exit 1
 fi
 # scan THIS repo, not the caller's cwd — the engine lists files via `git ls-files` from CWD,
@@ -214,9 +233,17 @@ export REPO_DIR="$(cd "$_here/../.." && pwd)"
 # TRACKER.md). Explicit values written IN instance.env still win.
 unset MC_STATE_FILE MC_TRACKER_FILE MEMORY_DB MEMORY_HOOK_LOG MEMORY_INDEX GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 [ -f "$_here/../instance.env" ] && . "$_here/../instance.env"
-_engine="${KICKOFF_CORE_DIR:-}/scripts/scan-structure.sh"
+_engine_dir="${KICKOFF_CORE_DIR:-}"
+_engine="$_engine_dir/scripts/scan-structure.sh"
 if [ ! -f "$_engine" ]; then
-  printf 'kickoff engine not present — run `kickoff pull` (see .kickoff/README)\\n' >&2
+  if [ -n "$_engine_dir" ] && [ -d "$_engine_dir" ]; then
+    # Unlike mission-control/, the scanners travel on the public release line — so a resolving
+    # core that lacks this component is an INCOMPLETE clone, and `kickoff pull` genuinely fixes
+    # it. Name the state precisely either way (dir missing vs component missing).
+    printf 'pinned core present but missing scripts/scan-structure.sh — run `kickoff pull` (see .kickoff/README)\\n' >&2
+  else
+    printf 'kickoff engine not present — run `kickoff pull` (see .kickoff/README)\\n' >&2
+  fi
   exit 1
 fi
 # scan THIS repo, not the caller's cwd — the engine lists files via `git ls-files` from CWD,
@@ -2585,6 +2612,103 @@ def cmd_sync_seams(args):
     return 0
 
 
+def cmd_reclass_live_config(args):
+    """Reclass ORG-EVOLVED seams (class="seam" whose on-disk bytes no longer match the recorded
+    sha256_at_write — or that carry NO recorded hash at all) to live-config, so a pull can
+    proceed WITHOUT destroying the org's content. Hit live 2026-08-31: three orgs'
+    pulls blocked by evolved seams, each repaired BY HAND with exactly this manifest edit; this
+    verb makes the repair first-class, dry-runnable, and auditable.
+
+    GOVERNANCE ONLY, by construction:
+      • The FILE is hashed, never written — the divergence (the operator's live evolution) is
+        precisely what must survive. The only bytes this verb writes are the manifest's + the
+        backup's.
+      • The ENTRY loses nothing but its class: action/source/sha256_at_write/original stay as
+        recorded, so eject reverses the touch exactly as before (live-config is "reversed like
+        created, NOT whole-file-hashed by preflight #8, NOT kept-by-default, NOT seam-synced" —
+        the schema's own semantics, header §THE SCHEMA).
+      • The candidate PREDICATE (bytes != recorded, or no record) is a superset of sync-seams'
+        refusal set, NOT an exact match: a drifted shape sync-seams merely regenerates/[ok]s can
+        appear too. Over-capture is benign-to-desirable — reclass only stands seam-sync down,
+        file bytes are never touched — and every candidate is PRINTED for review before --accept.
+      • DEFAULT (no --accept) is a DRY-RUN: print the candidates (recorded vs actual hash) and
+        change NOTHING.
+      • --accept writes a timestamped manifest backup FIRST (never clobbers an existing backup —
+        a same-second re-run gets a -N suffix) and prints its path, the audit trail the pull
+        surfaces.
+
+    PURELY ADDITIVE sibling of cmd_sync_seams — it reads the same helpers and mutates no other
+    verb's code (the pull surface's frozen digest must not move)."""
+    repo = resolve_repo_dir(args)
+    mpath = manifest_path(repo)
+    if not os.path.exists(mpath):
+        die("reclass-live-config: no manifest at %s — nothing to reclass" % mpath)
+    manifest = load_manifest(mpath)
+    only_paths = [repo_relative(p) for p in args.path] if args.path else None
+
+    candidates, outside = [], []
+    for e in manifest["entries"]:
+        if e.get("class") != "seam":
+            continue
+        path = e.get("path", "")
+        if only_paths is not None and path not in only_paths:
+            continue
+        recorded = e.get("sha256_at_write")
+        abs_path = os.path.join(repo, path)
+        # containment (the sync-seams Fix-A posture): a symlink / out-of-repo seam is a DIFFERENT
+        # refusal (sync-seams' own containment guard) — never silently absorbed here as "evolved".
+        if os.path.islink(abs_path) or not _real_within(repo, abs_path):
+            outside.append(path)
+            continue
+        if not os.path.isfile(abs_path):
+            continue            # missing file → sync-seams REGENERATES it; no refusal to heal
+        cur = sha256_file(abs_path)
+        # recorded is None counts TOO (a legacy / hand-mutated manifest entry): sync-seams still
+        # REFUSES it (the modified-since-generation arm can never match a missing record), so the
+        # old skip dead-ended the operator — refused on every pull, invisible to the escape
+        # hatch. No hash to preserve → reclass to live-config is exactly right.
+        if recorded is None or cur != recorded:
+            candidates.append((e, cur))
+
+    if outside:
+        for path in outside:
+            print("  [ skip ] %s  (symlink / resolves OUTSIDE the repo — sync-seams' containment "
+                  "refusal owns it, not this verb)" % path)
+    if not candidates:
+        print("reclass-live-config: no org-evolved seams found (nothing in sync-seams' refusal set)%s"
+              % (" — the --path filter matched none" if only_paths else ""))
+        return 0
+
+    print("reclass-live-config — repo=%s  [%s]" % (repo, "--accept" if args.accept else "DRY-RUN"))
+    for e, cur in candidates:
+        if e.get("sha256_at_write") is None:
+            print("  candidate: %s  (no recorded hash — legacy/hand-mutated entry; actual %s…)"
+                  % (e.get("path"), cur[:12]))
+        else:
+            print("  candidate: %s  (recorded %s… now %s…)"
+                  % (e.get("path"), (e.get("sha256_at_write") or "--------")[:12], cur[:12]))
+        print("    reclass seam → live-config: GOVERNANCE ONLY — file bytes untouched; seam-sync stops "
+              "regenerating it; preflight #8 stops whole-file-hashing it; eject still reverses it like `created`.")
+    if not args.accept:
+        print("── %d candidate(s); DRY-RUN changed nothing. Re-run with --accept to apply "
+              "(a timestamped manifest backup is written first)." % len(candidates))
+        return 0
+
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    backup = os.path.join(repo, ".kickoff", "adopt-manifest.json.pre-reclass-%s" % stamp)
+    n = 0
+    while os.path.lexists(backup):     # NEVER clobber a backup — a same-second re-run gets -1, -2, …
+        n += 1
+        backup = os.path.join(repo, ".kickoff", "adopt-manifest.json.pre-reclass-%s-%d" % (stamp, n))
+    shutil.copy2(mpath, backup)
+    for e, _cur in candidates:
+        e["class"] = "live-config"     # the ONLY field touched — every other entry field is preserved
+    save_manifest(mpath, manifest)
+    print("── %d seam entry(ies) reclassed to live-config; manifest backup (pre-reclass): %s"
+          % (len(candidates), backup))
+    return 0
+
+
 def cmd_verify(args):
     repo = resolve_repo_dir(args)
     mpath = manifest_path(repo)
@@ -3899,6 +4023,19 @@ def build_parser():
     rh.add_argument("--path", required=True,
                     help="repo-relative path to re-hash (allowlisted: %s)" % ", ".join(REHASH_ALLOWED_PATHS))
     rh.set_defaults(func=cmd_rehash_path)
+
+    rlc = sub.add_parser("reclass-live-config", parents=[common],
+                         help="reclass ORG-EVOLVED seams (on-disk bytes no longer matching the "
+                              "recorded sha256_at_write — or carrying no recorded hash; a "
+                              "superset of sync-seams' refusal set, every candidate printed) to "
+                              "live-config: GOVERNANCE ONLY, file bytes untouched, backup "
+                              "written. The sanctioned alternative to --force-regenerate "
+                              "(which DISCARDS).")
+    rlc.add_argument("--accept", dest="accept", action="store_true",
+                     help="apply the reclass (DEFAULT is a dry-run: list candidates, change nothing)")
+    rlc.add_argument("--path", dest="path", action="append", default=None, metavar="P",
+                     help="only consider this repo-relative path (repeatable; default: all candidates)")
+    rlc.set_defaults(func=cmd_reclass_live_config)
 
     return p
 

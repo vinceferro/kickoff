@@ -7,6 +7,48 @@ runs `kickoff pull` to update — the core flows in **once**, no hand-patched co
 log records what changed per core version (reverse-chronological); read it before you `kickoff pull`
 a newer tag.
 
+## core-v1.0 — 2026-09-03 — GRADUATION: the -alpha suffix retires
+
+**Stability contract: `instance.env` variable names UNCHANGED; `core-manifest.txt` changes —
+7 files ADDED:** `memory-retrieval/lib/cutoff.mjs` (REQUIRED: `hook.mjs` imports it — a
+manifest without it would ship a hook that crashes at import), `plugin/hooks/beat-nudge.py`
+(`hooks.json` wires it; it was never shipped — every adopter prompt ran a dead hook),
+`scripts/board-serve.sh` (the `up`-time board auto-serve it calls — now real for the
+private line; public line drops MC by policy and carries its own trimmed manifest),
+`memory-retrieval/scope-selftest.mjs`, `scripts/enable-gpu-gl.sh`,
+`scripts/selftest.sh`, and `scripts/plugin-selftest.sh` (each referenced by an already-shipped
+file — every shipped file's sibling references now resolve; import-closure audit clean).
+**2 members REMOVED as operator-context data** (`TRACKER-ARCHIVE.md`,
+`docs/moonpay-2min-runofshow.md`) — the ship set carries no operator-private artifacts.
+`plugin.json` bumps 0.3.28 → 0.3.29 solely to force the shared plugin-cache resync so the
+new hook file actually lands in existing caches. Eval assets (`eval-fixtures/`) stay local
+per the existing `eval-set.json` convention.
+
+What the line between v1.0.2-alpha and v1.0 carries, in adopter terms:
+
+- **The tenant sandbox is real and proven on both backends.** `tenant-sandbox-run` gains
+  docker alongside bwrap (parity asserted, including a real AI engine turn inside the
+  sandbox — DNS-resolver mount fixed at the symlink target, kill-matrix hardened, sweep
+  classifies orphaned CLIs by parentage so a dead wrapper's container holding RO-bound
+  credentials cannot leak). Opt-in `--with-engine-turn` keeps every default run hermetic
+  and seat-free.
+- **Per-function memory scoping — opt-in, fail-open, measured.** Set `MEMORY_HOOK_FUNCTION`
+  to scope a session's recall to its own corpus (+ ≤5 core facts; measured: fire-rate 79%→44%
+  at fleet scale with recall@3 0.88 held). Misconfiguration (including the
+  `CORE_SLUGS`-without-`FUNCTION` pair that used to kill the hook at import) now logs a
+  named warning and runs unscoped — the hook can no longer die by config. Slugs are
+  validated (`[A-Za-z0-9._-]+`). The acceptance eval is environment-independent: without a
+  semantic embedder it exits 0 with LOUD named SKIPS; with one, the full gates hold.
+- **Lanes/runner hardening.** Lane dispatch fails loud on a failed seed; lane sessions may
+  write /tmp; the runner's stall ladder + respawns carry predecessor context; the
+  repo-config-pin guard (8 RED controls) rides pre-push.
+- **Supervisor/liveness:** crash-loop alarms report delivery; liveness selftest extended.
+- **Docs/honesty:** backend-split coverage lines in the factory README; the engine-parity
+  rule (a backend gap is recorded, never silent) is now enforced by the journey itself.
+
+**Upgrade:** `kickoff pull` to the tag (or the turnkey). The two added manifest files flow
+in; nothing else in the contract moves.
+
 ## core-v1.0.0-alpha — first public line
 
 Clean-history start for the public repo. Same framework as the private line's core-v0.42 (parity

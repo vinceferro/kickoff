@@ -348,7 +348,7 @@ chk ".mcp.json declares the chrome-devtools MCP server" \
   "python3 -c \"import json;d=json.load(open('$PLUGIN/.mcp.json'));assert 'chrome-devtools' in d['mcpServers']\""
 # PAIRED-FLAG INVARIANT — forcing the ANGLE backend REMOVES Chrome's automatic software-WebGL
 # fallback (Chrome deprecated the implicit path; its own console warning names the opt-in flag).
-# Measured 2026-07-29: `--use-gl=angle --use-angle=gl-egl` alone engages this box's discrete NVIDIA GPU and
+# Measured 2026-07-29: `--use-gl=angle --use-angle=gl-egl` alone gives this box's RTX 3080 Ti and
 # drops a 3D page from 9.1 cores to 0.6 — but on a machine with no NVIDIA EGL vendor library it
 # leaves getContext('webgl') returning NULL, i.e. WebGL is not slow, it is GONE. Adding
 # --enable-unsafe-swiftshader restores the software path, so the same config is fast where there is

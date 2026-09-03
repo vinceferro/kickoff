@@ -273,6 +273,7 @@ gh[pousr]_[0-9A-Za-z]{36,}	HIGH	GitHub token
 xox[baprs]-[0-9A-Za-z-]{10,}	HIGH	Slack token
 "private_key"[[:space:]]*:[[:space:]]*"[^"]{40,}	HIGH	GCP service-account private key
 glpat-[0-9A-Za-z_-]{20,}	HIGH	GitLab personal access token
+sk-lg-[0-9A-Za-z_-]{20,}	HIGH	llm-gateway-issued API key (local provider; real credential — spend-capable via the gateway)
 npm_[0-9A-Za-z]{36}	HIGH	npm access token
 eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}	HIGH	JWT (if a service-role/secret key: remove; if a public anon/publishable key: allowlist)
 [a-z][a-z0-9+.-]*://[^/[:space:]:@"']+:[^/[:space:]:@"']+@	HIGH	credentials embedded in a URL/connection string

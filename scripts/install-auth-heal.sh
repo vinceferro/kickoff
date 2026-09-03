@@ -19,6 +19,10 @@
 #     S3d inject crashloop_alarm_due() (the finding #2 re-alarm cadence gate S3 now calls) as its
 #         own anchored edit; the shipped core keeps this helper in the bridge unit, which this
 #         maintainer retrofit does NOT ship (see SCOPE below) — so it is injected standalone.
+#     S3t inject a tg_send_tokenless LOUD-NO-OP FALLBACK behind a parse-time `command -v` guard
+#         (the S3 alarm now routes through the shared tokenless sender, whose real definition the
+#         retrofit does not ship — same seam and rationale as S3d; a core that already defines the
+#         real sender is never shadowed, and the fallback logs the skip, never silently swallows)
 #     S4  reset the crash-loop state on a HEALTHY refresh() (FASTDEATH_STREAK=0 +
 #         FASTDEATH_LAST_ALARM_STREAK=0 + zero
 #         announce.count) so a stale fast-death streak can't survive a deliberate refresh
@@ -26,8 +30,11 @@
 #   circuit-breaker + the finding #2 long-outage re-alarm. It does NOT retrofit BRIDGE-LIVENESS
 #   (finding #3): the BRIDGE_* globals + bridge_present/bridge_liveness_step/tg_send_tokenless/
 #   bridge_degraded_alarm ship ONLY in the baked core supervisor.sh (adopters get them via
-#   `kickoff pull`), never through this maintainer retrofit. The selftest's twin checks strip
-#   those bridge lines from BOTH sides before the byte-compare (scope-matched, not gutted).
+#   `kickoff pull`), never through this maintainer retrofit — EXCEPT the S3t fallback shim, which
+#   is not the bridge sender but a parse-time-guarded loud no-op so the S3 alarm call resolves on
+#   a pre-bridge target without shadowing a core that has the real sender. The selftest's twin
+#   checks strip those bridge lines from BOTH sides before the byte-compare (scope-matched, not
+#   gutted).
 #   scripts/session-run.sh
 #     R1  import CLAUDE_CODE_OAUTH_TOKEN from .kickoff/auth.env (0600, written by
 #         relogin.sh) — the delivery leg of the re-login turnkey
@@ -212,38 +219,18 @@ S3_NEW = r'''  # trigger 3: the managed session ended on its own (finished -p ru
       fi
     fi
     # honest alarm, fired ONCE as the streak crosses the alarm point: a DISTINCT degraded
-    # message, NOT the cheerful "org is cooking" ping (#8). The whole send is a ( ... ) || true
-    # subshell so the bot token never lands in a supervisor-scope var and no curl failure can
-    # abort this loop; it reuses session-run.sh's tokenless recipe (token on curl stdin via
-    # -K -, never argv). No quota-reset time is claimed (the session's stdout is /dev/null).
+    # message, NOT the cheerful "org is cooking" ping (#8). Routed through tg_send_tokenless
+    # like every other alarm — the shared send derives the channel/settings/access.json itself,
+    # keeps the bot token off argv (curl `-K -`), and LOGS the outcome (`tg-send: delivered` /
+    # `FAILED` / an explicit skip), so this path can never go silent again: the old inline curl
+    # subshell had `-o /dev/null`, no code capture, and silent `exit 0`s when inputs were
+    # missing. No quota-reset time is claimed (the session's stdout is /dev/null).
     if crashloop_alarm_due "$FASTDEATH_STREAK"; then
       # bookmark this streak so the NEXT re-alarm waits a bounded interval (finding #2) — never
       # every restart. Set before the send so a skipped/failed send still advances the bookmark.
       FASTDEATH_LAST_ALARM_STREAK="$FASTDEATH_STREAK"
       log "crash-loop: $FASTDEATH_STREAK fast deaths (<${FASTDEATH_THRESHOLD_SECONDS}s each) in a row; exponential backoff engaged (${backoff}s); sending the degraded alarm (re-alarm cadence every ${FASTDEATH_REALARM_EVERY})"
-      if command -v jq >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
-        (
-          _cb_tsd="${TELEGRAM_STATE_DIR:-}"
-          _cb_ienv="${INSTANCE_ENV:-$KICKOFF_DIR/instance.env}"
-          if [ -z "$_cb_tsd" ] && [ -f "$_cb_ienv" ]; then
-            _cb_tsd="$( set +eu; . "$_cb_ienv" >/dev/null 2>&1 || true; printf '%s' "${TELEGRAM_STATE_DIR:-}" )"
-          fi
-          _cb_settings="${SETTINGS_FILE:-$REPO_DIR/.claude/settings.local.json}"
-          _cb_access="$_cb_tsd/access.json"
-          [ -n "$_cb_tsd" ] && [ -f "$_cb_settings" ] && [ -f "$_cb_access" ] || exit 0
-          _cb_token="$(jq -r '.env.TELEGRAM_BOT_TOKEN // empty' "$_cb_settings" 2>/dev/null || true)"
-          _cb_chat="$(jq -r '.allowFrom[0] // empty' "$_cb_access" 2>/dev/null || true)"
-          [ -n "$_cb_token" ] && [ -n "$_cb_chat" ] || exit 0
-          _cb_text="⚠️ Worker is crash-looping: $FASTDEATH_STREAK restarts in a row, each dying within ~${FASTDEATH_THRESHOLD_SECONDS}s. Likely out of quota (weekly cap) or a persistent fault. Backing off to ${backoff}s between retries and will keep trying; it AUTO-RECOVERS the moment the cause clears (quota reset / fault gone). This is NOT the usual cooking ping."
-          printf 'url=%s\n' "https://api.telegram.org/bot${_cb_token}/sendMessage" \
-            | curl -s -o /dev/null --max-time 10 \
-                --data-urlencode "chat_id=${_cb_chat}" \
-                --data-urlencode "text=${_cb_text}" \
-                -K - 2>/dev/null || true
-        ) || true
-      else
-        log "crash-loop alarm: jq/curl missing, degraded alert skipped (backoff still engaged)"
-      fi
+      tg_send_tokenless "⚠️ Worker is crash-looping: $FASTDEATH_STREAK restarts in a row, each dying within ~${FASTDEATH_THRESHOLD_SECONDS}s. Likely out of quota (weekly cap) or a persistent fault. Backing off to ${backoff}s between retries and will keep trying; it AUTO-RECOVERS the moment the cause clears (quota reset / fault gone). This is NOT the usual cooking ping." "crash-loop"
     fi
     log "session ended after ${lifetime}s; restarting fresh (fast-death streak $FASTDEATH_STREAK, backoff ${backoff}s)"
     sleep "$backoff"
@@ -309,6 +296,33 @@ refresh() {
 '''
 S_CAD_MARK = 'crashloop_alarm_due() {'
 
+# S3t injects a tg_send_tokenless FALLBACK — S3's trigger-3 body CALLS the shared tokenless sender,
+# and a pre-bridge retrofit target does NOT define it (bridge-liveness ships only via the baked
+# core; see SCOPE), so the first alarm would abort the supervisor under set -e. S3d-mirror: injected
+# STANDALONE (never inside S3's body — the selftest's S3 twin check pins that body byte-identical
+# to the live block), at the same seam (right before refresh(), parsed before the poll loop), with
+# a PARSE-TIME `command -v` guard so a core that already defines the REAL sender (bridge unit,
+# parsed earlier) is never shadowed — only a pre-bridge target gets the fallback. The fallback is a
+# LOUD no-op in tg-send's own voice (silent inertness is exactly what the v0.9 lesson removed).
+# S_TOK_MARK ('tg_send_tokenless() {') exists in a modern core (the real definition) → S3t SKIPS
+# there; only a pre-bridge target injects the shim (and a second --apply sees the shim → skips).
+S_TOK_OLD = r'''refresh() {
+'''
+S_TOK_NEW = r'''# tg_send_tokenless FALLBACK (retrofit shim): the trigger-3 alarm routes through the shared
+# tokenless sender, whose real definition ships in the core's bridge unit. On a core that already
+# has it, this parse-time guard does nothing (the real sender stays); on a pre-bridge retrofit
+# target it defines a LOUD no-op so the alarm path can never abort the supervisor and can never
+# go silent — the skip is logged in tg-send's own voice.
+if ! command -v tg_send_tokenless >/dev/null 2>&1; then
+tg_send_tokenless() {
+  log "tg-send: no sender in this retrofit (bridge unit absent) — ${2:-alert} SKIPPED (nothing sent; install-auth-heal fallback)"
+}
+fi
+
+refresh() {
+'''
+S_TOK_MARK = 'tg_send_tokenless() {'
+
 R1_OLD = r'''# Which Telegram channel this worker is bridged to. NO baked-in default — fail LOUD if
 '''
 R1_NEW = r'''# ── AUTH ENV (scripts/relogin.sh turnkey) ─────────────────────────────────────
@@ -342,7 +356,7 @@ R2A_NEW = R2A_OLD + r'''
   # the WORK, not the refresh mechanics. Read the CURRENT board state — the `headline`
   # is the coordinator-maintained "what's the org doing now" line, rewritten at every
   # checkpoint; `in_progress[0]` is insertion-ordered so its [0] is the OLDEST item and
-  # fossilizes as the org marches on (it froze the ping for ~10 restarts). So
+  # fossilizes as the org marches on (it froze the ping for ~10 restarts — msg 1492). So
   # prefer the headline, fall back to in_progress[0] (an adopter with no headline yet),
   # treating an empty-string headline as absent. Any failure degrades to the generic
   # line — the announce itself must never break on a board hiccup.
@@ -373,6 +387,7 @@ EDITS = {
                ('S2 auth_heal_step per poll',       S2_OLD, S2_NEW, S2_MARK),
                ('S3 gate trigger-3 + crash-loop circuit-breaker', S3_OLD, S3_NEW, S3_MARK),
                ('S3d crashloop_alarm_due() helper (re-alarm cadence, #2)', S_CAD_OLD, S_CAD_NEW, S_CAD_MARK),
+               ('S3t tg_send_tokenless fallback shim (the S3 alarm call resolves on a pre-bridge core)', S_TOK_OLD, S_TOK_NEW, S_TOK_MARK),
                ('S4 refresh() resets the crash-loop streak + re-alarm bookmark', S4_OLD, S4_NEW, S4_MARK)],
     run_path: [('R1 import .kickoff/auth.env token', R1_OLD, R1_NEW, R1_MARK),
                ('R2a meaningful announce text',      R2A_OLD, R2A_NEW, R2A_MARK),

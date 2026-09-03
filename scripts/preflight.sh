@@ -123,6 +123,9 @@ _resolve_in_repo() {
 # NOT re-imported: it is the instance identity, resolved authoritatively above; config
 # does not redefine it. PERMISSION_MODE is intentionally NOT imported either — v0.7 G1
 # §2.3: the autonomy grant flows argv / terminal env ONLY, never a gitignored file.)
+# AUTO_PICKUP IS imported: unlike PERMISSION_MODE it is durable per-adopter policy on the
+# same footing as MODEL/EFFORT (the bounded-grant half — it still stops at every gate), not
+# the argv-only grant.
 INSTANCE_ENV_WHITELIST=(
   KICKOFF_CORE_DIR
   MC_STATE_FILE MC_TRACKER_FILE
@@ -130,7 +133,7 @@ INSTANCE_ENV_WHITELIST=(
   TELEGRAM_STATE_DIR CHANNEL_SPEC
   REGROUND_PROMPT
   MODEL EFFORT MAX_CONCURRENT_AGENTS
-  DEPLOY_BRANCH CADENCE
+  DEPLOY_BRANCH CADENCE AUTO_PICKUP
   WORKER_ENGINE OPENCODE_MODEL_PROVIDER OPENCODE_MODEL_ID
 )
 # A whitelisted var ALREADY set in the environment is a PRE-SET value from the TRUSTED launcher

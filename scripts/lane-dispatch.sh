@@ -105,10 +105,23 @@ PAYLOAD=$(jq -n --arg s "$SID" --arg d "$WT" --arg p "$PROMPT" --arg v "$EFFORT"
   {sessionID:$s, directory:$d, parts:[{type:"text",text:$p}]}
   | (if $v != "" then . + {variant:$v} else . end)
   | (if $m != "" then . + {model: {providerID: ($m|split("/"))[0], modelID: ($m|split("/"))[1]}} else . end)')
-curl -s --max-time 15 -H "x-opencode-directory:$WT" \
+SEED_OUT="$(curl -s --max-time 15 -H "x-opencode-directory:$WT" \
   -X POST "http://127.0.0.1:$PORT/session/$SID/prompt_async" \
   -H 'Content-Type: application/json' \
-  -d "$PAYLOAD" -o /dev/null -w "" || true
+  -d "$PAYLOAD" -w $'\n%{http_code}' 2>/dev/null)" || SEED_RC=$?
+SEED_RC="${SEED_RC:-0}"
+SEED_CODE="$(printf '%s' "$SEED_OUT" | tail -n1)"
+SEED_BODY="$(printf '%s' "$SEED_OUT" | sed '$d')"
+if [ "$SEED_RC" -ne 0 ] || [[ "$SEED_CODE" != 2* ]]; then
+  echo "FATAL: seed prompt_async failed (curl rc=$SEED_RC, http=$SEED_CODE)." >&2
+  echo "  serve said: ${SEED_BODY:-(no body)}" >&2
+  echo "  A lane whose seed never landed sits SILENT until the stall ladder — failing NOW" >&2
+  echo "  (the 2026-09-01 triple-wedge class; check the model pin + provider config)." >&2
+  curl -s --max-time 5 -X DELETE "http://127.0.0.1:$PORT/session/$SID" -o /dev/null || true
+  git -C "$REPO_DIR" worktree remove --force "$WT" >/dev/null 2>&1 || true
+  git -C "$REPO_DIR" branch -D "$BRANCH" >/dev/null 2>&1 || true
+  exit 1
+fi
 
 # ── graph node ───────────────────────────────────────────────────────────────
 GRAPH="$REPO_DIR/.kickoff/graph.json"

@@ -169,13 +169,22 @@ chk "ANNOUNCE: …and names a SUPPRESSED grant with its reason" \
 chk "ANNOUNCE: …and the kill-switch case is distinct from a suppression" \
   "grep -q 'your kill switch' '$SR'"
 
-# ══ 7. THE AUTONOMY GRANT MUST NOT ARRIVE FROM A GITIGNORED FILE ════════════════════════════
-# Same rule as PERMISSION_MODE: instance.env is invisible in review, so it may configure a worker
-# but never ARM one. If AUTO_PICKUP ever lands on that whitelist, this goes red on purpose.
-chk "AUTO_PICKUP is NOT on the instance.env whitelist (autonomy never comes from a gitignored file)" \
-  "! grep -E '^_INSTANCE_ENV_WHITELIST=' '$SR' | grep -q 'AUTO_PICKUP'"
-chk "…and instance.env.example says plainly that a line there is inert" \
-  "grep -q 'AUTO_PICKUP' '$HERE/instance.env.example' && grep -qi 'a line in THIS FILE DOES NOTHING' '$HERE/instance.env.example'"
+# ══ 7. THE PER-ADOPTER AUTONOMY PIN RIDES THE WHITELIST — PERMISSION_MODE NEVER DOES ═════════
+# AUTO_PICKUP is durable per-adopter policy, on the SAME FOOTING AS MODEL/EFFORT (cmd_up reads it
+# from the environment, and instance.env is imported before that read): a line in instance.env
+# ARMS auto-pickup for this instance and survives every launch and hop. PERMISSION_MODE is the
+# other half of the frozen contract and stays OFF the whitelist in BOTH importers: that grant
+# flows argv / terminal env ONLY — a gitignored file (invisible in review) must never arm it.
+for _wl in "$SR" "$HERE/kickoff"; do
+  chk "AUTO_PICKUP IS on the instance.env whitelist ($(basename "$_wl")) — it rides like MODEL/EFFORT" \
+    "grep -E '^_INSTANCE_ENV_WHITELIST=' '$_wl' | grep -q 'AUTO_PICKUP'"
+  chk "…while PERMISSION_MODE is NOT on the same whitelist (that grant never comes from a gitignored file)" \
+    "! grep -E '^_INSTANCE_ENV_WHITELIST=' '$_wl' | grep -q 'PERMISSION_MODE'"
+done
+chk "instance.env.example documents the pin as EFFECTIVE (a line there arms auto-pickup for this instance)" \
+  "grep -qi 'a line here arms auto-pickup' '$HERE/instance.env.example'"
+chk "…and the old inert-policy wording ('a line in THIS FILE DOES NOTHING') is GONE" \
+  "! grep -qi 'DOES NOTHING' '$HERE/instance.env.example'"
 
 echo
 echo "──────────────────────────────"

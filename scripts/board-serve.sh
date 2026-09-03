@@ -59,7 +59,10 @@ if [ ! -f "$STATE_FILE" ]; then
   exit 0
 fi
 if [ ! -f "$SERVER_PY" ]; then
-  warn "the engine has no mission-control/server.py at $SERVER_PY — skipping the board (an older/partial core; \`kickoff pull\` a full one)"
+  # The public release line ships WITHOUT mission-control/ by policy — `kickoff pull`
+  # can never add it there. Name both cases (partial core vs public line), per the
+  # mc-shim's public-line wording in adopt-manifest.py.
+  warn "the engine has no mission-control/server.py at $SERVER_PY — skipping the board (core shipped without the MC board: an older/partial core — \`kickoff pull\` fixes that — or the public line, which never carries it)"
   exit 0
 fi
 if ! command -v "$PY_BIN" >/dev/null 2>&1 && [ ! -x "$PY_BIN" ]; then
@@ -226,8 +229,11 @@ _c2=""
 if [ -f "$TOKEN_FILE" ]; then
   # -K - reads the auth header from STDIN (fed by the bash-builtin printf), so the token never lands
   # in curl's argv (/proc/<pid>/cmdline) the way -H "Bearer $(cat …)" would — matching the note above.
+  # And `-q` must stay curl's FIRST argument: curl reads ~/.curlrc / $CURL_HOME/.curlrc BEFORE any
+  # option, so a trace-ascii/output line there would capture the token-bearing request (the -K -
+  # config data included) to disk — same motion as ce5b40b at the four sender sites.
   _c2="$(printf 'header = "Authorization: Bearer %s"\n' "$(cat "$TOKEN_FILE")" \
-        | "$CURL_BIN" -s -o /dev/null -w '%{http_code}' -K - "$BASE/" 2>/dev/null || true)"
+        | "$CURL_BIN" -q -s -o /dev/null -w '%{http_code}' -K - "$BASE/" 2>/dev/null || true)"
 fi
 if [ "$_c1" = "401" ] && [ "$_c2" = "200" ]; then
   ok "tailnet confirm PASSED (401 unauthenticated, 200 with the token)"

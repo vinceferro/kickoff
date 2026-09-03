@@ -192,7 +192,7 @@ run the harness on a second box without adopting a pinned core into some other p
 ENOENT. One command now wires the whole thing:
 
 ```bash
-git clone <the kickoff repo> && cd kickoff
+git clone <the kickoff repo> && cd claude-kickoff
 bash scripts/bringup-source-instance.sh      # idempotent — safe to re-run after git pull
 ```
 

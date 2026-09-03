@@ -103,6 +103,31 @@ else
   bad "could not spawn the T1 stub"
 fi
 
+section "T1b — the opencode-telegram arm (engine parity with supervisor bridge_present)"
+# The WORKER_ENGINE=opencode bridge is the grinev `opencode-telegram` bot exec'd per spawn
+# (session-run.sh's final exec). supervisor.sh's bridge_present has accepted that argv since
+# v0.39 — but the reaper's _br_cmd_matches DRIFTED (missing the arm), so a verified-stale
+# opencode bridge holding the getUpdates slot was NOT recognized and NOT reaped: the fresh
+# worker boots deaf, the exact outage the reaper exists to prevent. RED-first: this lane
+# FAILS on the pre-fix helper (stub survives, logged as "NOT a telegram-bridge signature").
+OT="$FIX/opencode-telegram"
+cat > "$OT" <<'EOF'
+#!/usr/bin/env bash
+trap 'exit 0' TERM
+for _ in $(seq 1 120); do sleep 1; done
+EOF
+P1b="$(spawn_orphan "$CHAN" bash "$OT" start)"
+if [ -n "$P1b" ] && kill -0 "$P1b" 2>/dev/null; then
+  printf '%s' "$P1b" > "$CHAN/bot.pid"
+  OUT1b="$(run_reap "$CHAN")"
+  sleep 0.3
+  if ! kill -0 "$P1b" 2>/dev/null; then ok "opencode-telegram-argv stale holder (pid=$P1b) RECOGNIZED and reaped"; else bad "opencode-telegram holder pid=$P1b NOT recognized — the reaper's signature class has drifted from supervisor bridge_present again"; fi
+  echo "$OUT1b" | grep -q 'REAPING verified-stale channel holder' && ok "opencode-arm reap logged loudly" || bad "no loud reap log for the opencode arm: $OUT1b"
+  echo "$OUT1b" | grep -q 'WRAPPER-SURVIVED' && ok "wrapper survives the opencode-arm kill path (set -euo pipefail)" || bad "wrapper aborted on the opencode-arm kill path"
+else
+  bad "could not spawn the T1b stub"
+fi
+
 section "T2 — dead pid in bot.pid: NO action, file left for the fresh bridge"
 sleep 0.01 & DP=$!; wait "$DP" 2>/dev/null || true
 printf '%s' "$DP" > "$CHAN/bot.pid"

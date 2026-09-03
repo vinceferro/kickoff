@@ -23,6 +23,7 @@ REPO_DIR="${REPO_DIR:-$(cd "$HERE/.." && pwd)}"
 echo "▶ starting the session-refresh supervisor"
 echo "    repo:    $REPO_DIR"
 echo "    cadence: ${MAX_SESSION_SECONDS:-0}s (0 = none)"
+echo "    launch:  effort=${EFFORT:-<engine default>}  model=${MODEL:-<box inherit>}  auto-pickup=${AUTO_PICKUP:-0} (0 = off)"
 echo "    dry_run: ${DRY_RUN:-0}"
 echo "    permission-mode: ${PERMISSION_MODE:-default}   (← set PERMISSION_MODE=auto for the autonomous worker)"
 echo

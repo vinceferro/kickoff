@@ -22,6 +22,7 @@
 #   FAIL TOWARD NOT KILLING. A live bot.pid holder is killed ONLY after ALL of:
 #     1. /proc/<pid>/cmdline matches the bridge signature class (the same classes as
 #        supervisor.sh's bridge_present): *bun*telegram* / *bun*server.ts* / *telegram*server.ts*
+#        / *opencode-telegram*
 #     2. /proc/<pid>/environ (readable ⇒ same uid; unreadable ⇒ AMBIGUOUS ⇒ no kill) carries
 #        TELEGRAM_STATE_DIR=<exactly OUR state dir> (raw and pwd -P-resolved forms compared,
 #        fixed-string — a DIFFERENT project's bridge can never match)
@@ -63,6 +64,14 @@ _br_log() { printf '[bridge-reap %s] %s\n' "$(date -u +%H:%M:%S 2>/dev/null || e
 _br_cmd_matches() {
   case "$1" in
     *bun*telegram*|*bun*server.ts*|*telegram*server.ts*) return 0 ;;
+    # v0.39 engine parity (same line supervisor bridge_present carries): the
+    # WORKER_ENGINE=opencode bridge is the grinev `opencode-telegram` bot exec'd per spawn
+    # (session-run's final exec). Without this arm the reaper refused to recognize a
+    # verified-stale opencode bridge holding the getUpdates slot — the fresh worker booted
+    # DEAF, the exact outage this reap exists to prevent. Same trust shape as the bun
+    # signature above: argv alone never kills — the state-dir environ binding + the
+    # ancestry walk below still gate every kill.
+    *opencode-telegram*) return 0 ;;
     *) return 1 ;;
   esac
 }

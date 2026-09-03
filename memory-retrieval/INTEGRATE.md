@@ -7,8 +7,8 @@ This module is **portable** — no host path is hardcoded. You point it at a cor
 of markdown memory files with one env var (`MEMORY_DIR`) and wire one hook. The
 engineering substance is **measured** (see [METRICS.md](./METRICS.md)): on
 kickoff's own `memory/` corpus, recall@1 **70% (keyword) → 85% (hybrid w/ real
-local embeddings), +15pp**, noise fully suppressed. (The separate 108-fact
-reference-adopter corpus goes **60% → 85%**, +25pp.)
+local embeddings), +15pp**, noise fully suppressed. (The separate 108-fact Bliz
+reference corpus goes **60% → 85%**, +25pp.)
 
 ---
 
@@ -67,6 +67,15 @@ Conventions the parser handles:
 - **Write the `description` well** — it's weighted highest in BM25 (name 5× /
   description 3× / body 1×) and is part of the embedded text. It's your single
   biggest lever on retrieval quality.
+- **Multi-function corpora: declare the function.** If one `memory/` dir pools
+  several functions'/orgs' memories, each file should carry a `function:` in its
+  frontmatter (or use the `<function>__slug.md` filename prefix — the merge
+  convention). A session that sets `MEMORY_HOOK_FUNCTION=<name>` then gets an
+  index scoped to its own facts (+ a tiny shared core via
+  `MEMORY_HOOK_CORE_SLUGS`, ≤5 — measured). Files with **no** marker stay
+  visible to every scope, so a single-function corpus needs none of this. See
+  README → "Per-function index scoping" for the measured why (merged-pool
+  fire-rate 79% → scoped 44%, recall unchanged).
 
 ---
 
@@ -82,7 +91,9 @@ a `memory/` directory next to this module. Output reports the fact count, FTS ro
 link edges, and which embedder was used (REAL semantic vs the lexical stub).
 
 The index is a single file, `memory-index.db` (git-ignored — derived, rebuildable).
-Rebuild it whenever the memory files change. Override its location with `MEMORY_DB`.
+With `MEMORY_HOOK_FUNCTION` set it becomes `memory-index.<scope>.db` (scope-keyed —
+scoped sessions never clobber each other). Rebuild it whenever the memory files
+change. Override its location with `MEMORY_DB`.
 
 Quick sanity check:
 
@@ -171,12 +182,12 @@ This runs the labelled eval set through **keyword-only vs hybrid** and prints
 recall@1/3/5, MRR, per-case pass/fail, and noise suppression — so you can *show*
 the engineering is measured, not asserted. Machine-readable: `./run.sh eval --json`.
 
-> **Note — the shipped eval set is the neutral default.** `eval-set.json` ships as a
-> copy of the template (generic cases; this repo's `memory/` corpus is empty by
-> design, so their `expect` slugs do not exist in `../memory/` here). The original
-> **108-fact reference-adopter** set behind the `60%→85%` origin evidence is a
-> private third-party corpus and does **not** ship. To onboard **your own** corpus,
-> start from the template:
+> **Note — the shipped eval set is already kickoff's own.** `eval-set.json` holds
+> **kickoff's own** `memory/` slugs (24 cases), so `./run.sh eval` above measures
+> kickoff directly — **nothing to `cp` for kickoff**. The original **108-fact Bliz
+> reference** set behind the `60%→85%` origin evidence is a private third-party
+> corpus and does **not** ship. To onboard a **new, third-party** corpus, start from
+> the template:
 >
 > ```bash
 > cp eval-set.template.json eval-set.json   # only for a NEW corpus — then edit the cases
@@ -184,8 +195,8 @@ the engineering is measured, not asserted. Machine-readable: `./run.sh eval --js
 >
 > Write one realistic decision-time query per important memory, **paraphrased** (use
 > different words than the target fact — that's what tests real recall), plus a few
-> `expect: null` noise cases the cutoff must suppress. The template's example cases
-> are generic starting points — keep the ones that match your files, edit the rest.
+> `expect: null` noise cases the cutoff must suppress. The template is pre-seeded with
+> cases against kickoff's own memory slugs as a starting point.
 
 See [METRICS.md](./METRICS.md) for how to read recall@K / MRR, the cutoff-tuning
 trade-off, latency, and the honest stub-vs-real-embeddings finding.
@@ -198,19 +209,21 @@ The vector arm runs a **real, fully-local sentence-transformer**
 (`Xenova/all-MiniLM-L6-v2`, 384-dim) via transformers.js — **no API key, no cloud**.
 This is what flips hybrid from worse-than-keyword (with the old lexical stub) to
 **+15pp recall@1** over the keyword baseline (kickoff corpus; the separate 108-fact
-reference-adopter corpus is **+25pp**, 60→85). Install it in-place:
+Bliz reference corpus is **+25pp**, 60→85). Install it in-place:
 
 ```bash
 cd memory-retrieval/
-pnpm install --ignore-workspace        # pulls @xenova/transformers
-pnpm approve-builds --all              # let sharp build (pnpm >=10 blocks dep
-                                       #   build scripts by default; or: pnpm rebuild sharp)
+pnpm install                         # pulls @xenova/transformers (build scripts
+                                     #   allowlisted by the shipped pnpm-workspace.yaml)
 MEMORY_EMBEDDER=local MEMORY_DIR=$CLAUDE_PROJECT_DIR/memory ./run.sh index
 ```
 
-- `--ignore-workspace` keeps it **self-contained** — it installs into this module's
-  own `node_modules`, not the host repo's workspace, so it never perturbs kickoff's
-  dependency graph. `node_modules` + the lockfile are git-ignored.
+- **Self-contained by construction**: this directory carries its own
+  `pnpm-workspace.yaml`, so it IS a pnpm workspace root (pnpm resolves to the NEAREST
+  one) — a plain `pnpm install` installs into this module's own `node_modules`, not
+  the host repo's workspace. `node_modules` + the lockfile are git-ignored. Never
+  add `--ignore-workspace`: on pnpm ≥10 it skips `pnpm-workspace.yaml` entirely,
+  including the sharp build allowlist (green install, dead native binary).
 - **sharp is optional.** It's a transitive dep of transformers.js used only for IMAGE
   inputs; text embedding (all we use) works without it. If `approve-builds` is fiddly
   on your pnpm version, skip it — the indexer falls back to keyword-only and says so.
@@ -243,10 +256,10 @@ does the right thing whether or not you've installed the embedder.
 
 ```bash
 cd memory-retrieval/
-pnpm install --ignore-workspace && pnpm approve-builds --all # (e) real local embedder
+pnpm install                                           # (e) real local embedder
 export MEMORY_DIR=$CLAUDE_PROJECT_DIR/memory                 # (b) point at kickoff's memory
 ./run.sh index                                               # (b) build the index
 ./run.sh retrieve "deploying a schema change, what order"    #     sanity check
-./run.sh eval                                                # (d) metrics — the shipped eval-set.json is the neutral template default
+./run.sh eval                                                # (d) metrics — eval-set.json is already kickoff's own
 # (c) add the UserPromptSubmit hook to .claude/settings.json — see above
 ```

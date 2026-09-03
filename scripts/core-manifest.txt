@@ -83,6 +83,15 @@
 #   context-headroom.py measures how full a worker's context window is. It is NOT a boot check — it is
 #   conveniences: memory-search.js wires the retrieval corpus into opencode sessions and
 CORE-CHANGELOG.md
+# PUBLIC LINE (ratified 2026-08-31, v1-alpha; extended core-v1.0 2026-09-03): mission-control/*,
+#   TRACKER-ARCHIVE.md and scripts/board-serve.sh are PRIVATE-LINE capabilities — the public core
+#   ships the wiring (the mission-control skill), not the capability, so they are not part of this
+#   existence contract (board-serve's `up`-time call site is existence-guarded and skips when the
+#   file is absent). The fleet's private line keeps them; a future public MC release re-adds its
+#   entries here alongside the files.
+# context-headroom.py — public-line member (file ships in both trees): the context-discipline
+#   gauge the public charters reference.
+scripts/context-headroom.py
 #   core set) and checksums each path relative to $KICKOFF_CORE_DIR into core.lock.
 #   correction: long is fine when the situation earns it), past a runaway cap it DENIES with the
 #   dangles on a file `kickoff pull` never delivers.
@@ -156,6 +165,7 @@ memory-retrieval/eval-set.template.json
 memory-retrieval/hook.mjs
 memory-retrieval/index.mjs
 memory-retrieval/install-model.mjs
+memory-retrieval/lib/cutoff.mjs
 memory-retrieval/lib/embeddings.mjs
 memory-retrieval/lib/memory.mjs
 memory-retrieval/log-stats.mjs
@@ -164,14 +174,10 @@ memory-retrieval/package.json
 memory-retrieval/refresh-metrics.mjs
 memory-retrieval/retrieve.mjs
 memory-retrieval/run.sh
+memory-retrieval/scope-selftest.mjs
 #   memory-search-probe.sh makes acceptance proof P1 runnable. P1 ("a fresh opencode session's
 #   memory_search returns real hits") previously needed a human in a live session — a bad place for
 #   MINIMAL: default_agent + instructions + autoupdate off, and NOTHING else, because the
-# PUBLIC LINE (ratified 2026-08-31, v1-alpha): mission-control/* and TRACKER-ARCHIVE.md are
-#   PRIVATE-LINE capabilities — the public core ships the wiring (the mission-control skill),
-#   not the capability, so they are not part of this existence contract. The fleet's private
-#   line keeps them; a future public MC release re-adds its entries here alongside the files.
-
 #   mission-control/mission-state.json   — this adopter's live board state
 # ── mission control: the WHOLE SERVED SURFACE travels + pins together (core-v0.4 S5) ──
 #   mission-state.json (the adopter's live board, KICKOFF_STATE-wired) and the runtime
@@ -214,6 +220,7 @@ plugin/agents
 plugin/.claude-plugin/marketplace.json
 plugin/.claude-plugin/plugin.json
 plugin/hooks/agent-mail-hook.sh
+plugin/hooks/beat-nudge.py
 plugin/hooks/beat-length-guard.py
 plugin/hooks/context-handoff-nudge.py
 plugin/hooks/hooks.json
@@ -248,11 +255,11 @@ scripts/auth-heal.sh
 scripts/bridge-reap.sh
 scripts/bringup-source-instance.sh
 scripts/claims-audit.py
-scripts/context-headroom.py
 scripts/core-manifest.txt
 # scripts/core-manifest.txt — the CORE file manifest for `kickoff pull`  [R3]
 scripts/crew-probe.py
 scripts/crew-review-due.sh
+scripts/enable-gpu-gl.sh
 scripts/go-autonomous.sh
 scripts/gpu-render-check.sh
 scripts/graph-executor.sh
@@ -276,6 +283,7 @@ scripts/newbox-from-main.sh
 scripts/orphaned-work.py
 scripts/parity-report.sh
 #   scripts/parity-report.sh PROBES each capability's wiring per engine and holds the findings
+scripts/plugin-selftest.sh
 scripts/preflight.sh
 scripts/probe.sh
 scripts/push-verified.sh
@@ -288,6 +296,7 @@ scripts/scan-structure.sh
 scripts/secret-box-keygen.mjs
 scripts/secret-decrypt.mjs
 scripts/secret-keydir.mjs
+scripts/selftest.sh
 scripts/session-run.sh
 scripts/share-enable.sh
 scripts/start-supervisor.sh

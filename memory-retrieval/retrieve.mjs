@@ -95,28 +95,53 @@ function toFtsQuery(query) {
   return terms64.map((t) => `"${t}"`).join(" OR ");
 }
 
+/**
+ * The scope predicate shared by both arms: this function's memories + every
+ * unscoped one + the pinned core slugs. Empty when no scope is set (the whole
+ * index is the pool — the pre-knob behavior). Params line up with the `?`s.
+ */
+function scopeClause(scope, coreSlugs) {
+  if (!scope) return { where: "", params: [] };
+  const coreIn = coreSlugs.length ? ` OR m.slug IN (${coreSlugs.map(() => "?").join(",")})` : "";
+  return { where: ` AND (m.scope IS NULL OR m.scope = ?${coreIn})`, params: [scope, ...coreSlugs] };
+}
+
 /** Keyword arm: BM25-ranked FTS5 hits. Lower bm25() == better, so we sort asc. */
-function keywordSearch(db, query, limit) {
+function keywordSearch(db, query, limit, { scope = null, coreSlugs = [] } = {}) {
   const match = toFtsQuery(query);
   if (!match) return [];
-  // bm25(table, w_slug, w_name, w_desc, w_body) — weight name/description above
+  // bm25(f, w_slug, w_name, w_desc, w_body) — weight name/description above
   // body so a query matching a fact's title/summary ranks above an incidental
   // body mention.
+  const { where, params } = scopeClause(scope, coreSlugs);
+  // The FTS5 auxiliary bm25() must reference the TABLE NAME, not a join alias —
+  // `bm25(f, …)` on `memories_fts f` fails with a misleading "no such column: f"
+  // (measured on this box's SQLite). Alias the table for the JOIN, name it for
+  // bm25()/MATCH.
   const rows = db
     .prepare(
-      `SELECT slug, bm25(memories_fts, 0.0, 5.0, 3.0, 1.0) AS score
-       FROM memories_fts
-       WHERE memories_fts MATCH ?
+      `SELECT f.slug AS slug, bm25(memories_fts, 0.0, 5.0, 3.0, 1.0) AS score
+       FROM memories_fts f
+       LEFT JOIN memories m ON m.slug = f.slug
+       WHERE memories_fts MATCH ?${where}
        ORDER BY score ASC
        LIMIT ?`,
     )
-    .all(match, limit);
+    .all(match, ...params, limit);
   return rows.map((r, i) => ({ slug: r.slug, rank: i + 1, score: r.score }));
 }
 
 /** Vector arm: cosine over stored embeddings (brute force — fine at this scale). */
-async function vectorSearch(db, query, limit) {
-  const rows = db.prepare(`SELECT slug, dims, vector FROM vectors`).all();
+async function vectorSearch(db, query, limit, { scope = null, coreSlugs = [] } = {}) {
+  const { where, params } = scopeClause(scope, coreSlugs);
+  const rows = db
+    .prepare(
+      `SELECT v.slug AS slug, v.dims AS dims, v.vector AS vector
+       FROM vectors v
+       LEFT JOIN memories m ON m.slug = v.slug
+       WHERE 1=1${where}`,
+    )
+    .all(...params);
   if (rows.length === 0) return { results: [], semantic: false, degraded: null };
 
   const embedder = createEmbeddingProvider();
@@ -219,7 +244,21 @@ export function indexIsSemantic(dbPath = DEFAULT_DB_PATH) {
 
 // mode: "hybrid" (keyword ⊕ vector, default) | "keyword" (BM25 only — the
 // baseline the eval harness compares against to isolate the vector arm's delta).
-export async function retrieve(query, { k = 5, dbPath = DEFAULT_DB_PATH, mode = "hybrid" } = {}) {
+//
+// ── PER-FUNCTION SCOPING (scope / coreSlugs) ─────────────────────────────────
+// scope=<function name> restricts BOTH arms to (a) memories declaring that
+// function (frontmatter `function:` or the `<name>__slug.md` merge prefix —
+// see scopeOf in lib/memory.mjs) and (b) every UNSCOPED memory in the corpus.
+// Memories declaring a DIFFERENT function are excluded — that is the measured
+// precision fix (herdr-tg, 2026-09-02): fishing in other
+// functions' ponds is what floats the cutoff's pool-maximum over the floor.
+// coreSlugs=[...] additionally pins specific shared slugs into the pool (the
+// tiny cross-function core — ≤5 facts, measured; see hook.mjs).
+// scope unset → the exact pre-knob behavior (the whole index is the pool).
+export async function retrieve(
+  query,
+  { k = 5, dbPath = DEFAULT_DB_PATH, mode = "hybrid", scope = null, coreSlugs = [] } = {},
+) {
   if (!existsSync(dbPath)) {
     throw new Error(`Index not found at ${dbPath}. Run index.mjs first.`);
   }
@@ -233,10 +272,12 @@ export async function retrieve(query, { k = 5, dbPath = DEFAULT_DB_PATH, mode = 
 
   // Pull a wider candidate pool per arm than k, then fuse + trim.
   const pool = Math.max(k * 4, 20);
-  const keyword = keywordSearch(db, query, pool);
+  const keyword = keywordSearch(db, query, pool, { scope, coreSlugs });
   // Skip the vector arm entirely in keyword-only mode (the eval baseline).
   const { results: vector, semantic, degraded: vectorDegraded = null } =
-    mode === "keyword" ? { results: [], semantic: false } : await vectorSearch(db, query, pool);
+    mode === "keyword"
+      ? { results: [], semantic: false }
+      : await vectorSearch(db, query, pool, { scope, coreSlugs });
 
   const arms = [{ name: "keyword", results: keyword }];
   if (mode !== "keyword") arms.push({ name: "vector", results: vector });

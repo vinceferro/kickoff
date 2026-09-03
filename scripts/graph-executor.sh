@@ -58,8 +58,10 @@ TOKEN=$(jq -r '.env.TELEGRAM_BOT_TOKEN // empty' "$SETTINGS" 2>/dev/null || true
 CHAT=$(jq -r '(.allowFrom[0] // empty)' "$HOME/.claude/channels/telegram-$SLUG/access.json" 2>/dev/null || true)
 
 notify() { # $1=text
+  # -q FIRST: curl reads ~/.curlrc / $CURL_HOME/.curlrc before any option — a trace-ascii/output
+  # line there would write this token-bearing URL to disk. (Token on argv is a known gap, backlog.)
   [ -n "$TOKEN" ] && [ -n "$CHAT" ] && \
-    curl -s --max-time 10 "https://api.telegram.org/bot$TOKEN/sendMessage" \
+    curl -q -s --max-time 10 "https://api.telegram.org/bot$TOKEN/sendMessage" \
       -d chat_id="$CHAT" --data-urlencode "text=$1" >/dev/null || true
   echo "[graph] $1"
 }

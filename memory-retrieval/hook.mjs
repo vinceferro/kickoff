@@ -83,10 +83,15 @@ if (
   process.exit(res.status ?? 0);
 }
 
-const { DEFAULT_DB_PATH, DEFAULT_MEMORY_DIR, INSTANCE_TOOL_ROOT } = await import("./lib/memory.mjs");
+const { DEFAULT_DB_PATH, DEFAULT_MEMORY_DIR, INSTANCE_TOOL_ROOT, resolveScopeFromEnvSafe } =
+  await import("./lib/memory.mjs");
 const { retrieve, indexIsSemantic } = await import("./retrieve.mjs");
 const { isIndexStale, reindexIncremental } = await import("./index.mjs");
 const { installHint, semanticAvailability, warnSemanticDegraded } = await import("./lib/embeddings.mjs");
+// The relevance gate is SHARED (lib/cutoff.mjs) so the eval harness measures the
+// gate the hook actually runs — a hand-mirrored copy is how the seed harness
+// drifted (RRF floor transcribed differently; see lib/cutoff.mjs).
+const { evaluateCutoff } = await import("./lib/cutoff.mjs");
 
 // ── TUNING KNOBS ─────────────────────────────────────────────────────────────
 // All overridable by env so the cutoff can be tuned without code edits (and the
@@ -97,39 +102,52 @@ const env = process.env;
 // How many memories to inject at most.
 const TOP_K = Number(env.MEMORY_HOOK_K || 3);
 
-// RELEVANCE CUTOFF — the core "don't surface junk" guard. The retriever ALWAYS
-// ranks SOMETHING #1 (BM25 + RRF never return empty for any overlapping term),
-// and under weighted-RRF with a small k the raw RRF magnitude no longer separates
-// noise from signal (a lone rank-1 hit already scores high) — so the RRF floor is
-// only a sanity backstop. The REAL guard is per-arm STRENGTH over the candidate
-// pool. We surface iff SOME hit in the pool clears a strength bar on either arm:
+// RELEVANCE CUTOFF — see lib/cutoff.mjs. The floors live THERE now (exported,
+// env-tunable with the same MEMORY_HOOK_* names) so the hook and the eval run
+// one gate object. The measured limit of ANY floor here: the gate is a maximum
+// over the candidate pool, so a bigger corpus or K floats more hits over a fixed
+// bar (fires 44% → 79% as the corpus grew 16 → 233). The fix herdr measured is
+// not a better floor — it is scoping the pool (the knobs below).
+
+// ── PER-FUNCTION INDEX SCOPING (the measured precision fix) ──────────────────
+// MEMORY_HOOK_FUNCTION=<name> scopes retrieval to THIS session's function: the
+// candidate pool becomes the memories declaring that function (frontmatter
+// `function:` or the `<name>__slug.md` merge prefix — see scopeOf in
+// lib/memory.mjs) PLUS every unscoped memory in the corpus. A memory that
+// declares a DIFFERENT function is excluded — that is the whole fix: the hook
+// stops fishing in the other functions' ponds, where incidental lexical/
+// semantic overlap with a conversational turn is guaranteed (measured: fires
+// 79% → own-corpus band, recall@3 unchanged at 0.88).
 //
-//   (a) keyword grounding: at least one KEYWORD (BM25) hit must exist — real
-//       lexical overlap with the corpus. Kills pure gibberish (keywordHits===0).
-//   (b) lexical STRENGTH: some hit's BM25 must be ≤ BM25_FLOOR (BM25 is negative;
-//       MORE negative == stronger, more specific match). A real query lands a
-//       specific memory at a strong BM25 (e.g. −9…−20); an off-domain question
-//       only grazes a memory on incidental words (BM25 ~ −2…−4). Suppresses
-//       "weather forecast tomorrow" / "sourdough recipe".
-//   (c) SEMANTIC strength: some hit's vector cosine must be ≥ VEC_FLOOR. This is
-//       what REAL embeddings add — a pure-synonym query with NO strong keyword
-//       (e.g. "where do I find the Obsidian notes now", whose best BM25 is only
-//       ~−2.9) still surfaces because the target's cosine clears the floor, while
-//       off-domain queries stay below it.
+// MEMORY_HOOK_CORE_SLUGS=slug1,slug2 (optional) adds a tiny SHARED core —
+// cross-cutting memories every function should see. Measured constraint: ≤5
+// facts. herdr's own test: own-16 + 54 "core" memories fired 74% ≈ the flat
+// corpus's 79% — general-purpose working lessons match almost any turn, and
+// that generality IS the noise. A shared core has to be five facts, not fifty
+// (more than 5 is allowed but warned about, so a future slow creep is visible).
 //
-// We check the candidate POOL (top-K), not just hit #1: a strong unique signal can
-// live at rank 2-3 after fusion (the vault-moved fact is vector-#1 but keyword-
-// absent, so it fuses to #2 behind a keyword-grounded neighbour). Gating only on #1
-// would wrongly suppress it. The two floors are calibrated against the eval set:
-// noise tops out at BM25~−2.8 / cosine~0.25; the weakest legit semantic hit
-// (the vault query) sits at cosine 0.33 — VEC_FLOOR 0.30 separates them with margin.
-const BM25_FLOOR = Number(env.MEMORY_HOOK_BM25_FLOOR || -5.0);
-// Vector cosine floor for the all-MiniLM-L6-v2 scale. Genuine paraphrase matches
-// for this model run ~0.30-0.55; off-domain queries stay ≤0.25. (A different model
-// — e.g. OpenAI text-embedding-3 — has a different scale; retune if you swap it.)
-const VEC_FLOOR = Number(env.MEMORY_HOOK_VEC_FLOOR || 0.3);
-const RRF_FLOOR = Number(env.MEMORY_HOOK_RRF_FLOOR || 0.016);
-const REQUIRE_KEYWORD_GROUNDING = env.MEMORY_HOOK_NO_KEYWORD_GUARD !== "1";
+// Both knobs compose with MEMORY_DIR (which stays the per-function corpus seam
+// at the env layer): MEMORY_DIR picks the corpus root; MEMORY_HOOK_FUNCTION
+// narrows INSIDE it when that corpus is shared/merged. A corpus with no scope
+// markers at all behaves exactly as before (everything is unscoped → visible).
+//
+// The knobs scope the INDEX ITSELF, not just the query: lib/memory.mjs scopes
+// the corpus enumeration (own + unscoped + pinned core) and keys the derived
+// DEFAULT_DB_PATH on the scope, so the hook builds/reads an index whose corpus
+// statistics are the scoped corpus's. That second layer is load-bearing — a
+// query-time filter alone measured 55% (still above the 50% gate) because BM25
+// kept scoring against the merged pool; the scoped INDEX reproduces herdr's
+// own-corpus band. The retrieve() scope/coreSlugs below remain as defense in
+// depth (a foreign-declared record can never surface even if it leaked in).
+// F-2: through the fail-open umbrella. The old direct resolveScopeFromEnv()
+// here — plus the one inside the lib's own module-scope defaultDbPath() — made
+// a misconfigured pair (e.g. MEMORY_HOOK_CORE_SLUGS without
+// MEMORY_HOOK_FUNCTION) throw at IMPORT time: raw stack, exit 1, the hook dead
+// EVERY turn with main().catch never reached. Any scope misconfig now logs one
+// named warning and runs UNSCOPED — the hook must never be dead.
+const scopeResolved = resolveScopeFromEnvSafe();
+const FUNCTION_SCOPE = scopeResolved?.scope ?? null;
+const CORE_SLUGS = scopeResolved?.coreSlugs ?? [];
 
 // Retrieval mode. "auto" (default) picks KEYWORD when the index has no real
 // embedder (the lexical stub measurably HURTS — see eval: hybrid recall@1 40% vs
@@ -203,45 +221,8 @@ function resolveQuery() {
 }
 
 // ── CUTOFF ───────────────────────────────────────────────────────────────────
-/**
- * The relevance gate. Returns { surface: boolean, reason }. Suppressing a weak
- * query is a FEATURE: a block of irrelevant memory every turn trains the agent
- * to ignore it. Better to stay silent until the signal is real.
- */
-function evaluateCutoff(results, meta) {
-  if (results.length === 0) return { surface: false, reason: "no-results" };
-  const top = results[0];
-  // RRF floor is now only a sanity backstop (weighted-RRF magnitudes don't
-  // separate noise) — still reject a degenerate near-zero top.
-  if (top.rrf < RRF_FLOOR) {
-    return { surface: false, reason: `below-rrf-floor(${top.rrf.toFixed(4)}<${RRF_FLOOR})` };
-  }
-  if (REQUIRE_KEYWORD_GROUNDING && meta.keywordHits === 0) {
-    return { surface: false, reason: "no-keyword-grounding" };
-  }
-  // Strength gate over the candidate POOL (not just hit #1): surface iff SOME hit
-  // clears a strength bar on either arm. A strong unique signal can land at rank
-  // 2-3 after fusion (a vector-only hit fuses behind a keyword-grounded neighbour).
-  let bestBm25 = Number.POSITIVE_INFINITY; // more negative == stronger
-  let bestVec = Number.NEGATIVE_INFINITY;
-  for (const r of results) {
-    const kw = r.contributions?.keyword?.score;
-    const vec = r.contributions?.vector?.score;
-    if (kw !== undefined && kw < bestBm25) bestBm25 = kw;
-    if (vec !== undefined && vec > bestVec) bestVec = vec;
-  }
-  const strongKeyword = Number.isFinite(bestBm25) && bestBm25 <= BM25_FLOOR;
-  const strongVector = meta.semantic && Number.isFinite(bestVec) && bestVec >= VEC_FLOOR;
-  if (!strongKeyword && !strongVector) {
-    const bm = Number.isFinite(bestBm25) ? bestBm25.toFixed(2) : "n/a";
-    const vc = Number.isFinite(bestVec) ? bestVec.toFixed(3) : "n/a";
-    return {
-      surface: false,
-      reason: `weak-match(bm25=${bm}>${BM25_FLOOR}, vcos=${vc}<${VEC_FLOOR})`,
-    };
-  }
-  return { surface: true, reason: "ok" };
-}
+// The relevance gate itself lives in lib/cutoff.mjs (shared with the eval
+// harness — one gate object, no transcription drift).
 
 // ── FORMATTING (the injection block) ─────────────────────────────────────────
 /** Pull the first N meaningful body lines (skip blanks + pure markdown noise). */
@@ -348,7 +329,11 @@ async function main() {
     console.error(
       `kickoff memory hook: no index at ${DEFAULT_DB_PATH} — first index build not done. ` +
         `Run \`MEMORY_DIR=<repo>/memory node --experimental-sqlite memory-retrieval/index.mjs\` ` +
-        `or see RUNNING.md (second-machine / engine-development section).`,
+        `or see RUNNING.md (second-machine / engine-development section).` +
+        (FUNCTION_SCOPE
+          ? ` (Scope '${FUNCTION_SCOPE}' active — also check that some memory declares ` +
+            `this function: a <${FUNCTION_SCOPE}>__ prefix or a frontmatter function:)`
+          : ""),
     );
     logFire({ query: summarize(query), suppressed: true, reason: "no-index", surfaced: [] });
     return;
@@ -422,7 +407,14 @@ async function main() {
   let results = [];
   let meta = {};
   try {
-    ({ results, meta } = await retrieve(query, { k: TOP_K, mode }));
+    ({ results, meta } = await retrieve(query, {
+      k: TOP_K,
+      mode,
+      // Per-function index scoping (see the knobs above): null = unscoped
+      // (the flat pool, exactly the pre-knob behavior).
+      scope: FUNCTION_SCOPE,
+      coreSlugs: CORE_SLUGS,
+    }));
   } catch (err) {
     logFire({
       query: summarize(query),
@@ -454,6 +446,7 @@ async function main() {
     logFire({
       query: summarize(query),
       mode,
+      ...(FUNCTION_SCOPE ? { scope: FUNCTION_SCOPE } : {}),
       suppressed: true,
       reason,
       semantic: meta.semantic,
@@ -472,6 +465,7 @@ async function main() {
   logFire({
     query: summarize(query),
     mode,
+    ...(FUNCTION_SCOPE ? { scope: FUNCTION_SCOPE } : {}),
     suppressed: false,
     reason,
     semantic: meta.semantic,

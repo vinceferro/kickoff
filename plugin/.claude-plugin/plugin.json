@@ -1,7 +1,7 @@
 {
   "name": "kickoff",
   "description": "The kickoff engine as a Claude Code plugin: the coordinator/specialist skills, the function-agent crew, the proactive memory-retrieval hook (resolved from the pinned core clone, never bundled), and the chrome-devtools MCP. Delivered to an adopter repo at project scope by `kickoff adopt`; the version tracks the pinned core-v* tag.",
-  "version": "0.3.28",
+  "version": "0.3.29",
   "author": {
     "name": "kickoff"
   },

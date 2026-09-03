@@ -264,6 +264,7 @@ if [ -f "$R/curl/argv.1" ]; then
   grep -q "chat_id=555000111" "$R/curl/argv.1" && ok "alert targeted the allowFrom chat" || bad "chat_id missing from alert"
   grep -q "relogin.sh" "$R/curl/argv.1" && ok "alert copy hands the operator the turnkey (relogin.sh)" || bad "alert copy lacks relogin.sh"
   grep -q "botTESTTOK-123456" "$R/curl/stdin.1" 2>/dev/null && ok "bot token rides curl stdin (-K -), off argv" || bad "token URL not on curl stdin"
+  grep -q -- '^-q ' "$R/curl/argv.1" && ok "curl's FIRST argument is -q (suppresses ~/.curlrc / \$CURL_HOME/.curlrc — a trace-ascii there would write the token URL to disk)" || bad "curl's first argv is not -q (got: $(head -n1 "$R/curl/argv.1" | cut -c1-40))"
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -676,6 +677,11 @@ rf_of "$IF/scripts/supervisor.sh" | grep -q 'announce.count' && ok "S4 landed: r
 # finding #2 LONG-OUTAGE RE-ALARM retrofit landed. RED-on-old: a pre-re-alarm installer injects NONE
 # of these, so each assertion FAILS if the S0/S3/S4 re-alarm additions are absent (proven separately).
 cad_of() { awk '/^crashloop_alarm_due\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$1"; }
+# tok_of: the REAL tg_send_tokenless (the alarm sender trigger-3 now calls). Same zero-drift
+# rationale as cad_of: extract the live definition and drive the TRUE send — the fixtures carry a
+# real token/chat (new_fixture), the fake curl records what the sender actually does, so the
+# argv/stdin assertions below keep their exact meaning against the real sender, not a stub.
+tok_of() { awk '/^tg_send_tokenless\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$1"; }
 t3_of() { awk '/^  if ! session_alive && \[ ! -f "\$KICKOFF_DIR\/auth-escalated" \]; then$/{f=1} f{print} f&&/^  fi$/{exit}' "$1"; }
 grep -q 'FASTDEATH_REALARM_EVERY=' "$IF/scripts/supervisor.sh" && ok "re-alarm #2: S0 injects the FASTDEATH_REALARM_EVERY global" || bad "re-alarm #2 MISSING: no FASTDEATH_REALARM_EVERY global (S0)"
 t3_of "$IF/scripts/supervisor.sh" | grep -q 'if crashloop_alarm_due ' && ok "re-alarm #2: S3 trigger-3 alarm gate is crashloop_alarm_due (bounded re-fire, not once-only)" || bad "re-alarm #2 MISSING: trigger-3 still uses the once-only -eq gate"
@@ -754,6 +760,11 @@ gl_of() { awk '/^RESTART_BACKOFF_SECONDS="\$\{RESTART_BACKOFF_SECONDS:-5\}"/{f=1
 # readability test this guard would print a happy ✓ about a file it never opened (a vacuous pass).
 [ -r "$SCRIPTS/install-auth-heal.sh" ] && ! grep -q 'MODEL_FALLBACK\|model_fallback' "$SCRIPTS/install-auth-heal.sh" && ok "filter honesty: installer ships NO model-fallback (so S0 may ignore its core-only globals)" || bad "filter honesty BROKEN (or install-auth-heal.sh is unreadable): strip_bridge must stop ignoring MODEL_FALLBACK_* globals"
 [ "$(t3_of "$IF/scripts/supervisor.sh" | strip_bridge)" = "$(t3_of "$SCRIPTS/supervisor.sh" | strip_bridge)" ] && ok "S3 twin: patched trigger-3 block == live supervisor.sh (core-only hop lines filtered)" || bad "S3 twin DRIFT: installer trigger-3 != live supervisor.sh"
+# S3t: the trigger-3 body CALLS tg_send_tokenless, and a pre-bridge retrofit target does not define
+# it — the installer must ship the parse-time-guarded fallback or the first alarm aborts (set -e).
+grep -q '^if ! command -v tg_send_tokenless >/dev/null 2>&1; then' "$IF/scripts/supervisor.sh" \
+  && ok "S3t: a parse-time-guarded tg_send_tokenless fallback ships (the alarm call resolves on a pre-bridge core; a real sender is never shadowed)" \
+  || bad "S3t MISSING or wrong shape: retrofitted supervisor calls tg_send_tokenless with no guaranteed definition — first alarm aborts under set -e"
 [ "$(rf_of "$IF/scripts/supervisor.sh" | strip_bridge)" = "$(rf_of "$SCRIPTS/supervisor.sh" | strip_bridge)" ] && ok "S4 twin: retrofitted refresh() == live reset (bridge-liveness + hop filtered)" || bad "S4 twin DRIFT: installer refresh() != live supervisor.sh"
 bdir="$(ls -1d "$IF/.kickoff/backups"/auth-heal-* 2>/dev/null | tail -1)"
 [ -n "$bdir" ] && [ "$(sha256sum "$bdir/supervisor.sh" | cut -d' ' -f1)" = "$sup0" ] && ok "backup byte-matches the pre-apply original" || bad "backup wrong/missing"
@@ -799,9 +810,12 @@ grep -qxF 'scripts/relogin.sh'  "$MAN" && ok "core-manifest pins scripts/relogin
 section "T25 crash-loop circuit-breaker (findings #1 + #8): backoff growth + one alarm + survivor reset"
 # Drives the REAL trigger-3 circuit-breaker block, extracted live from supervisor.sh (zero drift),
 # through a fast-death streak then a survivor. Hermetic: fake curl (records argv+stdin, no network),
-# stubbed sleep/start_session/session_alive, its own mktemp fixture. Proves exponential backoff
-# growth, ONE distinct tokenless alarm at the crossing, and that a normal-lifetime session resets
-# BOTH the streak AND announce.count (so session-run's "restart #N" tracks the current bad streak).
+# the REAL crashloop_alarm_due + tg_send_tokenless extracted live (the gate AND the sender the
+# block calls — the alarm path is driven end-to-end against the true send, not a stub), stubbed
+# sleep/start_session/session_alive/engine_hop_boundary, its own mktemp fixture. Proves exponential
+# backoff growth, ONE distinct tokenless alarm at the crossing, and that a normal-lifetime session
+# resets BOTH the streak AND announce.count (so session-run's "restart #N" tracks the current bad
+# streak).
 R="$(new_fixture t25cb)"
 cb_t3_of() { awk '/^  if ! session_alive && \[ ! -f "\$KICKOFF_DIR\/auth-escalated" \]; then$/{f=1} f{print} f&&/^  fi$/{exit}' "$1"; }
 cb_t3_of "$SCRIPTS/supervisor.sh" > "$R/t3block.sh"
@@ -811,6 +825,8 @@ cb_t3_of "$SCRIPTS/supervisor.sh" > "$R/t3block.sh"
 # and the first-alarm-at-crossing behavior is PRESERVED (crashloop_alarm_due returns true at ALARM_AT+1).
 cad_of "$SCRIPTS/supervisor.sh" > "$R/cad.sh"
 { [ -s "$R/cad.sh" ] && grep -q '^crashloop_alarm_due() {' "$R/cad.sh"; } && ok "extracted the live crashloop_alarm_due gate (drives the REAL re-alarm, #2)" || bad "could not extract crashloop_alarm_due"
+tok_of "$SCRIPTS/supervisor.sh" > "$R/tok.sh"
+{ [ -s "$R/tok.sh" ] && grep -q '^tg_send_tokenless() {' "$R/tok.sh"; } && ok "extracted the live tg_send_tokenless sender (drives the REAL alarm send, not a stub)" || bad "could not extract tg_send_tokenless"
 echo 7 > "$R/.kickoff/announce.count"     # seed non-zero to prove fast deaths do NOT reset it
 (
   scenario_env "$R"
@@ -819,11 +835,16 @@ echo 7 > "$R/.kickoff/announce.count"     # seed non-zero to prove fast deaths d
   FASTDEATH_THRESHOLD_SECONDS=60; FASTDEATH_ALARM_AT=3; FASTDEATH_STREAK=0
   FASTDEATH_REALARM_EVERY=12; FASTDEATH_LAST_ALARM_STREAK=0       # re-alarm knobs the extracted gate reads (#2)
   eval "$(cat "$R/cad.sh")"                                       # define the REAL crashloop_alarm_due in-harness
+  eval "$(cat "$R/tok.sh")"                                       # …and the REAL tokenless sender the alarm calls
   SESSION_PGID="live"
   log() { :; }
   sleep() { printf '%s\n' "$1" >> "$KICKOFF_DIR/sleeps.log"; }          # capture backoff, never really sleep
   start_session() { SESSION_STARTED="$SECONDS"; printf 'x\n' >> "$KICKOFF_DIR/restarts.log"; }
   session_alive() { return 1; }                                        # dead each poll → drives trigger-3
+  # the trigger-3 block ends at the session boundary (engine_hop_boundary → start_session): stub
+  # it OBSERVABLY — the block MUST clear the boundary on every death (never wedge before it), so
+  # its call count is asserted against the restart count below, not left as undefined-command noise.
+  engine_hop_boundary() { printf 'x\n' >> "$KICKOFF_DIR/hops.log"; }
   blk="$(cat "$R/t3block.sh")"
   drive() {                                # $1 = simulated session lifetime (seconds)
     SECONDS=100000; SESSION_STARTED=$((SECONDS - $1))
@@ -846,12 +867,14 @@ counts="$(tr '\n' ' ' < "$R/.kickoff/counts.log" 2>/dev/null)"
 cc="$(CURL_RECORD_DIR="$R/curl" curl_count)"
 [ "$cc" = "1" ] && ok "degraded alarm fired EXACTLY once (at the streak crossing)" || bad "alarm count=$cc (want 1)"
 [ "$(wc -l < "$R/.kickoff/restarts.log" 2>/dev/null)" = "7" ] && ok "start_session ran after every death (never wedges — always retries)" || bad "restart count wrong: $(wc -l < "$R/.kickoff/restarts.log" 2>/dev/null)"
+[ "$(wc -l < "$R/.kickoff/hops.log" 2>/dev/null)" = "7" ] && ok "engine_hop_boundary fired on every death boundary (hop and restart stay in lockstep)" || bad "hop count wrong: $(wc -l < "$R/.kickoff/hops.log" 2>/dev/null)"
 if [ -f "$R/curl/argv.1" ]; then
   grep -q "crash-looping" "$R/curl/argv.1" && ok "alarm copy is the DISTINCT degraded message (crash-looping)" || bad "alarm copy is not the degraded message"
   grep -q "org is cooking on" "$R/curl/argv.1" && bad "alarm reuses the cheerful ping's phrase (must be distinct — #8)" || ok "alarm is distinct from the cheerful 'org is cooking on' ping (#8)"
   grep -q "TESTTOK-123456" "$R/curl/argv.1" && bad "BOT TOKEN LEAKED ON ARGV" || ok "bot token NOT on curl argv"
   grep -q "chat_id=555000111" "$R/curl/argv.1" && ok "alarm targeted the allowFrom chat" || bad "chat_id missing from alarm"
   grep -q "botTESTTOK-123456" "$R/curl/stdin.1" 2>/dev/null && ok "bot token rides curl stdin (-K -), off argv" || bad "token URL not on curl stdin"
+  grep -q -- '^-q ' "$R/curl/argv.1" && ok "curl's FIRST argument is -q (suppresses ~/.curlrc / \$CURL_HOME/.curlrc — a trace-ascii there would write the token URL to disk)" || bad "curl's first argv is not -q (got: $(head -n1 "$R/curl/argv.1" | cut -c1-40))"
 fi
 # cap + overflow safety (the "never wedges" property): a long outage grows the streak
 # unboundedly — the backoff must CAP at RESTART_BACKOFF_CAP_SECONDS and the shift must never
@@ -859,6 +882,7 @@ fi
 Rc="$(new_fixture t25cap)"
 cb_t3_of "$SCRIPTS/supervisor.sh" > "$Rc/t3block.sh"
 cad_of "$SCRIPTS/supervisor.sh" > "$Rc/cad.sh"     # the REAL re-alarm gate the block calls (#2)
+tok_of "$SCRIPTS/supervisor.sh" > "$Rc/tok.sh"     # the REAL sender the alarm calls (FIX C seam)
 (
   scenario_env "$Rc"
   set -euo pipefail
@@ -866,10 +890,12 @@ cad_of "$SCRIPTS/supervisor.sh" > "$Rc/cad.sh"     # the REAL re-alarm gate the 
   FASTDEATH_THRESHOLD_SECONDS=60; FASTDEATH_ALARM_AT=3; FASTDEATH_STREAK=0
   FASTDEATH_REALARM_EVERY=12; FASTDEATH_LAST_ALARM_STREAK=0      # re-alarm knobs (#2)
   eval "$(cat "$Rc/cad.sh")"                                     # define the REAL crashloop_alarm_due
+  eval "$(cat "$Rc/tok.sh")"                                     # …and the REAL tokenless sender
   SESSION_PGID="live"; log() { :; }
   sleep() { printf '%s\n' "$1" >> "$KICKOFF_DIR/sleeps.log"; }
   start_session() { SESSION_STARTED="$SECONDS"; }
   session_alive() { return 1; }
+  engine_hop_boundary() { :; }                                   # observed in the cb scenario; no-op here
   blk="$(cat "$Rc/t3block.sh")"
   i=0; while [ "$i" -lt 40 ]; do SECONDS=100000; SESSION_STARTED=$((SECONDS - 5)); eval "$blk"; i=$((i + 1)); done
 ) > "$SCRATCH/t25cap.log" 2>&1

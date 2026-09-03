@@ -3,7 +3,7 @@
 // WebGL renderer + screenshot. Requires the GPU GL libs (scripts/enable-gpu-gl.sh) + playwright.
 //
 // Usage: NODE_PATH=<your-app>/node_modules node scripts/gpu-render.mjs <url> <outPng> [flagset]
-// CONFIRMED 2026-06-28: flagset 'angle-egl' → "ANGLE (NVIDIA GeForce …)" on a discrete NVIDIA GPU, full bloom.
+// CONFIRMED 2026-06-28: flagset 'angle-egl' → "ANGLE (NVIDIA GeForce RTX 3080 Ti)", full bloom.
 // NOTE: use the FULL chromium (chromium-*), not chrome-headless-shell, for GPU. The chrome-devtools
 // MCP browser is launched once at session start (pre-fix) so it can stay on swiftshader — use THIS.
 import { createRequire } from 'node:module';

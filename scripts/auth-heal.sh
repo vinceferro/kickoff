@@ -270,7 +270,9 @@ _ah_probe() {
 # Best-effort: any missing piece (jq, curl, settings, access.json, token, chat id)
 # logs and skips — it must NEVER fail the step. Bot token read at runtime via jq and
 # fed to curl OFF argv (`-K -` reads the url= line from stdin; printf is a builtin,
-# so the token never lands in /proc/<pid>/cmdline). ≤1 send per cooldown.
+# so the token never lands in /proc/<pid>/cmdline). `-q` stays curl's FIRST argument:
+# curl reads ~/.curlrc / $CURL_HOME/.curlrc before any option, so a trace-ascii/output
+# line there would write the token-bearing URL to disk. ≤1 send per cooldown.
 _ah_alert() {
   local text="$1"
   local stamp="${_AH_KDIR:-.kickoff}/auth-heal.alert.last"
@@ -300,7 +302,7 @@ _ah_alert() {
   fi
   echo "$now" > "$stamp" 2>/dev/null || true
   api_url="https://api.telegram.org/bot${token}/sendMessage"
-  if printf 'url=%s\n' "$api_url" | curl -s -o /dev/null \
+  if printf 'url=%s\n' "$api_url" | curl -q -s -o /dev/null \
        --max-time 10 \
        --data-urlencode "chat_id=${chat_id}" \
        --data-urlencode "text=${text}" \

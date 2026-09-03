@@ -94,7 +94,20 @@ class H(http.server.BaseHTTPRequestHandler):
         with open(os.path.join(state, "posts.jsonl"), "a") as f:
             f.write(json.dumps({"path": self.path, "body": body}) + "\n")
         if "prompt_async" in self.path:
-            self._reply({})
+            # W1: an optional injected failure — $STATE/prompt_async_reply_code makes
+            # the seed POST fail like the real serve does (ProviderModelNotFoundError
+            # etc. surface as non-2xx), so dispatch's fail-loud path is drivable.
+            code_file = os.path.join(state, "prompt_async_reply_code")
+            if os.path.exists(code_file):
+                code = int(open(code_file).read().strip() or 500)
+                b = json.dumps({"error": "injected seed failure"}).encode()
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(b)))
+                self.end_headers()
+                self.wfile.write(b)
+            else:
+                self._reply({})
         else:
             # POST /session: honors $STATE/session_reply when present (the respawn
             # lane drives a VALID id through); default hyphen-id is deliberately
@@ -361,6 +374,33 @@ chk "SELF-START: dispatch spawns its runner and records the pid in the ledger" \
 chk "SELF-START: the spawned runner is a LIVE process" \
     '[ -n "$SELF_PID" ] && [ "$SELF_PID" != "0" ] && [ -d "/proc/$SELF_PID" ]'
 [ -n "$SELF_PID" ] && [ "$SELF_PID" != "0" ] && kill "$SELF_PID" 2>/dev/null
+
+# ── W1 (2026-09-01): the seed POST is not fire-and-discarded ─────────────────
+# Real cost: three planner lanes sat SILENT (user message delivered, zero assistant
+# tokens, no error surfaced anywhere the coordinator looks) because dispatch threw
+# away the seed prompt_async response (`-o /dev/null -w "" || true`). Fix under
+# test: a failed seed → dispatch exits non-zero NAMING prompt_async, deletes the
+# session, removes its worktree+branch, and writes NO graph node.
+reset_posts
+DREPO4="$F/drepo4"; mkdir -p "$DREPO4/.kickoff"
+git -C "$DREPO4" init -q
+git -C "$DREPO4" -c user.email=t@t -c user.name=t commit -q --allow-empty -m root
+printf '%s\n' "$PORT" > "$DREPO4/.kickoff/opencode-bridge.port"
+printf '500\n' > "$STATE/prompt_async_reply_code"
+D4_RC=0
+REPO_DIR="$DREPO4" HOME="$F/home" KICKOFF_LANES_ROOT="$F/lanes" LANE_AUTOSTART=0 \
+  timeout 15 bash "$HERE/lane-dispatch.sh" builder "-do the fixture thing" >"$F/d4.log" 2>&1 || D4_RC=$?
+rm -f "$STATE/prompt_async_reply_code"
+chk "W1: dispatch FAILS loudly when the seed prompt_async fails" '[ "$D4_RC" -ne 0 ]'
+chk "W1: the failure NAMES the seed (prompt_async), not a generic error" \
+    'grep -q "prompt_async" "$F/d4.log"'
+chk "W1: no graph node is written for a failed-seed dispatch" \
+    '[ "$(jq ".lanes | length" "$DREPO4/.kickoff/graph.json" 2>/dev/null || echo 0)" = "0" ]'
+chk "W1: the lane worktree is cleaned up (no orphan tree)" \
+    '! git -C "$DREPO4" worktree list | grep -q "lanes/drepo4"'
+chk "W1: the lane branch is cleaned up" \
+    '! git -C "$DREPO4" branch --list "lane/*" | grep -q .'
+
 
 reset_posts
 rm -f "$WT/p1-marker"

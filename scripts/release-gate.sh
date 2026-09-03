@@ -98,7 +98,7 @@ MANIFEST_PATH="scripts/core-manifest.txt"
 CHANGELOG_PATH="CORE-CHANGELOG.md"
 INSTALLER_PATH="install.sh"
 LEFTHOOK_PATH="lefthook.yml"
-GH_SLUG="vinceferro/kickoff"          # the public repo the canonical install URL points at
+GH_SLUG="vinceferro/claude-kickoff"          # the public repo the canonical install URL points at
 
 # Files that live in a core directory but deliberately DO NOT travel to adopters (maintainer/host tools,
 # and the test suites). Structural, not identity — safe to hardcode. Used by manifest-covers-new-files.
@@ -471,7 +471,7 @@ check_installer_url_parity() {
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     nsites=$((nsites + 1))
-    ref="$(printf '%s' "$line" | sed -n "s#.*kickoff/\(core-v[0-9][0-9A-Za-z.]*\)/install\.sh.*#\1#p" | head -n1)"
+    ref="$(printf '%s' "$line" | sed -n "s#.*claude-kickoff/\(core-v[0-9][0-9A-Za-z.]*\)/install\.sh.*#\1#p" | head -n1)"
     [ "$ref" = "$want" ] && continue
     bad="${bad}
          - ${line#${CANDIDATE}:}
@@ -614,12 +614,12 @@ check_leak_scan_on_tree() {
     # ── AMBIENT PATTERNS ARE A GUESS, AND A GUESS MUST NOT HARD-BLOCK ON A WORD IT DID NOT CAUSE ──
     # Every pattern in $struct is derived from THIS BOX's username and hostname. That is ambient
     # identity, not an operator claim, and it collides with ordinary English. Cost, 2026-08-27: a
-    # machine whose hostname is a common English word (5 chars — it clears the >=3 guard) turned
-    # every occurrence of that word into a HARD leak finding. core-v0.8.1 carries the word in 19
-    # files of plain prose (circuit-breaker and escalation language), so release-gate-selftest went
-    # 60/7 RED there and GREEN here on byte-identical code, and — because that suite is a registered
-    # pre-push gate — it blocked EVERY push from that machine. Reproduced by setting HOSTNAME to
-    # that word: same tree, same denylist, hostname the only variable, GREEN -> RED.
+    # second machine whose hostname is `alarm` (5 chars — it clears the >=3 guard) turned every
+    # occurrence of that word into a HARD leak finding. core-v0.8.1 carries it in 19 files of plain
+    # prose ("escalation alarm", "re-alarm"), so release-gate-selftest went 60/7 RED there and GREEN
+    # here on byte-identical code, and — because that suite is a registered pre-push gate — it
+    # blocked EVERY push from that machine. Reproduced on this box with HOSTNAME=alarm: same tree,
+    # same denylist, hostname the only variable, GREEN -> RED.
     #
     # The discriminator is INTRODUCTION, not presence. If the PREVIOUS released tag already carries
     # the pattern, this candidate did not leak it — the word was public before this box existed, and

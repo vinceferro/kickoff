@@ -30,11 +30,13 @@
 #
 # RED-ON-OLD: it re-runs the new-behavior assertions against a saved copy of HEAD's supervisor.sh
 # and asserts at least one FAILS there — a test that passes on old code proves nothing
-# (memory/fixture-can-mask-the-bug-it-should-catch.md). When the working-tree unit is
-# byte-identical to HEAD's (the normal post-commit state) the proof is N/A and auto-SKIPPED —
-# the suite stays green-runnable as a plain regression gate; the proof re-arms automatically on
-# the next behavioral edit (the skip triggers only on byte-identical units, so a real delta can
-# never dodge it).
+# (memory/fixture-can-mask-the-bug-it-should-catch.md). TWO independent legs, because the code
+# lives in two places: the KICKOFF-BRIDGE-UNIT scenarios skip when the unit is byte-identical to
+# HEAD's (the normal post-commit state — the proof is N/A, not failed), and the crash-loop leg
+# (y) is judged on the crash-loop BLOCK's own byte-delta, since that block is main-loop code the
+# unit identity cannot see. When both deltas are absent (everything committed) both proofs are
+# N/A and the suite stays green-runnable as a plain regression gate; a real delta in either
+# place re-arms its proof automatically — a delta can never dodge it by living in the other file.
 #
 # Usage:  bash scripts/supervisor-liveness-selftest.sh
 # Exit non-zero on any failed assertion (or if RED-on-old is not proven).
@@ -251,6 +253,240 @@ run_scenario() {
   R_COUNT="$(grep -c . "$REFRESH_LOG" 2>/dev/null)"; R_COUNT="${R_COUNT:-0}"
   A_COUNT="$(grep -c . "$ALARM_LOG" 2>/dev/null)";   A_COUNT="${A_COUNT:-0}"
   R_LAST="$(tail -n1 "$REFRESH_LOG" 2>/dev/null || echo '')"
+}
+
+# ── the CRASH-LOOP leg (scenario y) ──────────────────────────────────────────
+# The crash-loop alarm block is MAIN-LOOP code — it sits OUTSIDE the KICKOFF-BRIDGE-UNIT
+# markers, so its RED-on-old is judged on ITS OWN delta (see the RED-on-old section), never on
+# bridge-unit identity. This leg extracts the block from CRASH_SRC (the supervisor.sh file this
+# lane's unit came from) and drives it with the unit's REAL tg_send_tokenless + the stubbed
+# curl/jq fixtures. A fixed "current" alias keeps the scenario bodies lane-blind (NEW finishes
+# its whole suite before OLD starts — no interleave).
+extract_crashblock() {  # $1 = supervisor.sh source, $2 = destination
+  # Line-anchored on the exact `if crashloop_alarm_due` line through its own (4-space) closing
+  # `fi` — the inner if/fi are indented deeper and never match (the same anchoring discipline
+  # extract_unit applies after the v0.20 collapse).
+  awk '
+    /^    if crashloop_alarm_due "\$FASTDEATH_STREAK"; then$/ { f=1; print; next }
+    f { if (/^    fi$/) { print; exit } print }
+  ' "$1" > "$2" 2>/dev/null
+}
+crashloop_leg() {  # tag derives from $UNIT_FILE (unit.new.sh / unit.old.sh)
+  local tag=any; case "$UNIT_FILE" in *.new.sh) tag=new ;; *.old.sh) tag=old ;; esac
+  local crashblock="$WORK/crashblock.$tag.sh"
+  extract_crashblock "${CRASH_SRC:-/nonexistent}" "$crashblock" || true
+  cp "$crashblock" "$WORK/crashblock.current.sh"
+  # The crash-loop alarm was the ONE alarm not routed through tg_send_tokenless: an inline curl
+  # subshell with `-o /dev/null`, no HTTP-code capture, and SILENT `exit 0`s when the Telegram
+  # wiring was missing — a send that could not say whether it delivered, on exactly the path
+  # that fires when nobody is watching. Asserted here is the LOG (delivered / FAILED / an
+  # explicit logged skip), never the delivery itself, plus the absence of a bare inline curl.
+  check "$([ -s "$crashblock" ] && echo yes || echo no)" "yes" \
+        "(y) extracted the crash-loop alarm block (non-vacuous — an empty block would assert nothing)"
+  run_scenario '
+    : > "$WORK/log.y"; log() { printf "%s\n" "$*" >> "$WORK/log.y"; }
+    FASTDEATH_ALARM_AT=3; FASTDEATH_REALARM_EVERY=12; FASTDEATH_LAST_ALARM_STREAK=0
+    FASTDEATH_STREAK=4; FASTDEATH_THRESHOLD_SECONDS=60; backoff=600
+    KICKOFF_DIR="$WORK/kick.y"; mkdir -p "$KICKOFF_DIR"
+    TELEGRAM_STATE_DIR="$WORK/chan.y"; mkdir -p "$TELEGRAM_STATE_DIR"
+    printf "{}\n" > "$TELEGRAM_STATE_DIR/access.json"
+    SETTINGS_FILE="$WORK/settings.y.json"; printf "{}\n" > "$SETTINGS_FILE"
+    export STUB_CURL_CODE=200
+    . "$WORK/crashblock.current.sh"'
+  local yc ys yj yk
+  yc="$(grep -c 'tg-send: delivered (crash-loop, HTTP 200)' "$WORK/log.y" 2>/dev/null)"
+  check "${yc:-0}" 1 "(y) the crash-loop alarm rides tg_send_tokenless — a 'tg-send: delivered' line lands (assert the LOG, not delivery)"
+  yj="$(grep -c 'crash-loop: 4 fast deaths' "$WORK/log.y" 2>/dev/null)"
+  check "${yj:-0}" 1 "(y) the crash-loop context line still logs (bookkeeping unchanged)"
+  ys="$(grep -c 'tg_send_tokenless' "$crashblock" 2>/dev/null)"
+  check "${ys:-0}" 1 "(y) the send routes through tg_send_tokenless (not an inline curl subshell)"
+  check "$(grep -c 'curl' "$crashblock" 2>/dev/null)" 0 "(y) NO bare inline curl remains on the crash-loop path"
+  # …and the MISSING-WIRING case must skip LOUDLY: an explicit logged tg-send line, never a
+  # silent no-op (the old shape exited 0 without a trace when state/settings were absent).
+  run_scenario '
+    : > "$WORK/log.y2"; log() { printf "%s\n" "$*" >> "$WORK/log.y2"; }
+    FASTDEATH_ALARM_AT=3; FASTDEATH_REALARM_EVERY=12; FASTDEATH_LAST_ALARM_STREAK=0
+    FASTDEATH_STREAK=4; FASTDEATH_THRESHOLD_SECONDS=60; backoff=600
+    KICKOFF_DIR="$WORK/kick.y2"; mkdir -p "$KICKOFF_DIR"      # no instance.env, no channel dir
+    unset TELEGRAM_STATE_DIR SETTINGS_FILE INSTANCE_ENV
+    . "$WORK/crashblock.current.sh"'
+  yk="$(grep -c 'tg-send:' "$WORK/log.y2" 2>/dev/null)"
+  check "$([ "${yk:-0}" -ge 1 ] && echo yes || echo no)" "yes" \
+        "(y) with no Telegram wiring the path logs an explicit tg-send SKIP (never a silent no-op)"
+}
+
+# ── the CURLRC-LEAK leg (rider fix C) ─────────────────────────────────────────
+# curl reads ~/.curlrc (or $CURL_HOME/.curlrc) BEFORE any command-line option — so a
+# trace-ascii / dump-header / output line in a user's curl config writes the token-bearing
+# Bot-API URL to disk on every send. The fix at every token-bearing send site: `-q` as the
+# FIRST curl argument, which suppresses the default config file (and ONLY it — `-K -` stdin
+# configs still apply). This leg drives the REAL curl (never the stub — a stub cannot read
+# curlrc) against a hostile $CURL_HOME fixture:
+#     trace-ascii = "<fixture>/leak.txt"  +  proxy = "http://127.0.0.1:9"
+# The dead loopback proxy keeps the send hermetic (refused in ~0ms, zero real network) and
+# makes the leak VISIBLE as a written file. A `--connect-to` wrapper shim pins the Bot-API
+# host to that same refused loopback port so the POST-FIX run — where -q has suppressed the
+# curlrc's proxy too — is EQUALLY hermetic instead of silently re-opening the real network.
+# Asserted: no leak file under the fixture AND zero fake-token bytes anywhere under it
+# (grep -r). On a refused proxy the request is never sent, so the token grep alone cannot go
+# red pre-fix — the WRITTEN FILE is the red; the grep is the real-world guard for a curlrc
+# leak on a live network, where the request (and its token-bearing request line) completes.
+curlrc_leg() {  # $1 = optional tag — each run gets its OWN pristine fixture (a previous run's
+                # leak.txt must never survive into the next run's no-leak-file assert)
+  local TAG="${1:-live}"
+  local REAL_CURL; REAL_CURL="$(command -v curl 2>/dev/null || true)"
+  if [ -z "$REAL_CURL" ]; then
+    printf '  skip curlrc-leak leg — no real curl on PATH (the stub cannot read curlrc)\n'
+    return 0
+  fi
+  echo "  (drives the REAL curl against a hostile \$CURL_HOME — hermetic: dead loopback proxy + a --connect-to shim)"
+  local LANE="$WORK/curlrc-lane"
+  mkdir -p "$LANE/bin" "$LANE/bin2"
+  # the real curl, shimmed hermetic: pin the Bot-API host to a refused loopback port. The
+  # flag goes AFTER "$@" on purpose — `-q` is only honored as curl's FIRST parameter, so the
+  # shim must not prepend anything ahead of the recipe's own argv (a prepended flag would
+  # silently un-suppress curlrc and fake a leak).
+  cat > "$LANE/bin/curl" <<EOF
+#!/usr/bin/env bash
+exec "$REAL_CURL" "\$@" --connect-to api.telegram.org:443:127.0.0.1:9
+EOF
+  # jq answers ONLY tg_send_tokenless's two queries — with the FAKE sentinel token the
+  # leak greps hunt for (123456:FAKE-TEST-token; never a real token in a fixture)
+  cat > "$LANE/bin/jq" <<'EOF'
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in
+    *TELEGRAM_BOT_TOKEN*) printf '123456:FAKE-TEST-token\n'; exit 0 ;;
+    *allowFrom*)          printf '12345\n';                 exit 0 ;;
+  esac
+done
+exit 0
+EOF
+  # argv recorder (mirrors auth-heal-selftest's fake-curl): shadows curl, records argv,
+  # drains stdin (the -K - pipe), answers 200 — a send that RAN is observed, never real
+  cat > "$LANE/bin2/curl" <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null 2>&1 || true
+printf '%s\n' "$*" >> "${CURL_ARGV_LOG:?}"
+printf '200'
+exit 0
+EOF
+  chmod +x "$LANE/bin/curl" "$LANE/bin/jq" "$LANE/bin2/curl"
+
+  # the send sites, extracted VERBATIM from the live files (consumed state, not a copy).
+  # CURLRC_SRC lets the RED-on-old leg (leg 3 below) run this whole leg against HEAD's
+  # sender; it defaults to the live supervisor.sh.
+  awk '/^tg_send_tokenless\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "${CURLRC_SRC:-$SUPERVISOR_NEW}" > "$LANE/tg.sh"
+  awk '/^  local api_url="https:\/\/api\.telegram\.org/{f=1} f{print} f&&/^  unset token api_url$/{exit}' "$SCRIPT_DIR/session-run.sh" > "$LANE/announce.sh"
+  awk '/^notify\(\) \{/{f=1} f{print} f&&/^\}$/{exit}' "$SCRIPT_DIR/graph-executor.sh" > "$LANE/notify.sh"
+  local fn
+  for fn in tg announce notify; do
+    [ -s "$LANE/$fn.sh" ] || { bad "(R2) could not extract site $fn from its live file — asserting nothing"; return 0; }
+  done
+
+  # fixtures: the hostile curlrc + the Telegram wiring the sender needs (the token comes
+  # from the jq fixture above — it must NOT sit in any fixture file the token-grep sweeps)
+  local FIX="$LANE/fixture-$TAG"
+  mkdir -p "$FIX" "$FIX/clean-home" "$FIX/state" "$FIX/kick"
+  cat > "$FIX/.curlrc" <<EOF
+trace-ascii = "$FIX/leak.txt"
+proxy = "http://127.0.0.1:9"
+EOF
+  printf '{"env":{}}\n' > "$FIX/settings.json"           # the jq fixture answers; the file only must exist
+  printf '{"allowFrom":["12345"]}\n' > "$FIX/state/access.json"
+
+  # (R1) the hostile-curlrc send: REAL curl, CURL_HOME at the fixture, FAKE token
+  : > "$WORK/log.R1"
+  (
+    set +u
+    PATH="$LANE/bin:$PATH"
+    export CURL_HOME="$FIX" TELEGRAM_STATE_DIR="$FIX/state" SETTINGS_FILE="$FIX/settings.json"
+    log() { printf '%s\n' "$*" >> "$WORK/log.R1"; }
+    . "$LANE/tg.sh"
+    tg_send_tokenless "hello" "curlrc-probe"
+  )
+  check "$(grep -c '^tg-send: ' "$WORK/log.R1" 2>/dev/null)" 1 \
+        "(R1) the hostile-curlrc send still ran the pipeline end to end (a tg-send verdict line landed)"
+  if [ -e "$FIX/leak.txt" ]; then
+    bad "(R1) hostile \$CURL_HOME/.curlrc (trace-ascii) was HONORED — a leak/traces file was written under the fixture"
+  else
+    ok "(R1) hostile \$CURL_HOME/.curlrc not honored: no leak/traces file under the fixture"
+  fi
+  if grep -rqF '123456:FAKE-TEST-token' "$FIX" 2>/dev/null; then
+    bad "(R1) FAKE token bytes found under the fixture (grep -r) — the URL leaked to disk"
+  else
+    ok "(R1) zero token bytes anywhere under the fixture (grep -r negative control)"
+  fi
+
+  # (R1-pc) POSITIVE CONTROL, function level: a clean-$CURL_HOME send still runs the REAL
+  # pipeline (jq → -K - stdin → curl → code capture → log). The network is absent ON PURPOSE
+  # (the shim refuses) — what must hold is that the send is attempted and its verdict LOGGED.
+  : > "$WORK/log.R1c"
+  (
+    set +u
+    PATH="$LANE/bin:$PATH"
+    export CURL_HOME="$FIX/clean-home" TELEGRAM_STATE_DIR="$FIX/state" SETTINGS_FILE="$FIX/settings.json"
+    log() { printf '%s\n' "$*" >> "$WORK/log.R1c"; }
+    . "$LANE/tg.sh"
+    tg_send_tokenless "hello" "curlrc-clean"
+  )
+  check "$(grep -c '^tg-send: FAILED (curlrc-clean, HTTP 000)' "$WORK/log.R1c" 2>/dev/null)" 1 \
+        "(R1-pc) a clean-\$CURL_HOME send still runs end to end: attempted against the refused shim, verdict LOGGED (HTTP 000)"
+  # …and recipe level: `-q` must NOT break the `-K -` stdin config — curl must exit rc=7
+  # (connection refused: the url= from stdin WAS attempted), never rc=2 ("no URL specified").
+  local pc_rc=0
+  printf 'url=http://127.0.0.1:9/bot123456:FAKE-TEST-token/sendMessage\n' \
+    | CURL_HOME="$FIX/clean-home" "$REAL_CURL" -q -s -o /dev/null -w '%{http_code}' --max-time 3 \
+        --data-urlencode "chat_id=12345" --data-urlencode "text=hello" -K - >/dev/null 2>&1 || pc_rc=$?
+  check "$pc_rc" 7 \
+        "(R1-pc) -q leaves -K - intact: curl attempted the stdin url= (rc=7 refused; a broken -K - would be rc=2 no-URL)"
+
+  # (R2) argv shape, consumed state: drive each REAL site with the recording curl — the first
+  # flag on curl's argv must be `-q`, and sites 1-2 must still carry `-K -` (token off argv).
+  : > "$LANE/argv.sup"
+  (
+    set +u
+    PATH="$LANE/bin2:$LANE/bin:$PATH"
+    export CURL_ARGV_LOG="$LANE/argv.sup" TELEGRAM_STATE_DIR="$FIX/state" SETTINGS_FILE="$FIX/settings.json"
+    log() { :; }
+    . "$LANE/tg.sh"
+    tg_send_tokenless "hello" "argv-shape"
+  )
+  check "$(awk 'NR==1{print $1; exit}' "$LANE/argv.sup" 2>/dev/null)" "-q" \
+        "(R2) supervisor.sh tg_send_tokenless: curl's FIRST argument is -q"
+  check "$(grep -c -- '-K -' "$LANE/argv.sup" 2>/dev/null)" 1 \
+        "(R2) supervisor.sh tg_send_tokenless: the -K - stdin recipe is intact (token still off argv)"
+
+  : > "$LANE/argv.sr"; : > "$WORK/log.R2sr"
+  (
+    set +u
+    PATH="$LANE/bin2:$LANE/bin:$PATH"
+    export CURL_ARGV_LOG="$LANE/argv.sr"
+    drive_announce_send() {
+      local token="123456:FAKE-TEST-token" chat_id="12345" text="hello" count=1
+      log() { printf '%s\n' "$*" >> "$WORK/log.R2sr"; }
+      . "$LANE/announce.sh"
+    }
+    drive_announce_send
+  ) >/dev/null        # the recorder's stdout + the block's own echo are noise here; the asserts read the files
+  check "$(awk 'NR==1{print $1; exit}' "$LANE/argv.sr" 2>/dev/null)" "-q" \
+        "(R2) session-run.sh announce send: curl's FIRST argument is -q"
+  check "$(grep -c -- '-K -' "$LANE/argv.sr" 2>/dev/null)" 1 \
+        "(R2) session-run.sh announce send: the -K - stdin recipe is intact (token still off argv)"
+  check "$(grep -c 'announce: sent restart #1 heartbeat to chat 12345' "$WORK/log.R2sr" 2>/dev/null)" 1 \
+        "(R2) session-run.sh announce: the send still completes (the 'sent' log line lands)"
+
+  : > "$LANE/argv.gx"
+  (
+    set +u
+    PATH="$LANE/bin2:$LANE/bin:$PATH"
+    export CURL_ARGV_LOG="$LANE/argv.gx"
+    TOKEN="123456:FAKE-TEST-token" CHAT="12345"
+    . "$LANE/notify.sh"
+    notify "hello"
+  ) >/dev/null        # ditto: notify echoes to stdout; the assert reads the recorded argv
+  check "$(awk 'NR==1{print $1; exit}' "$LANE/argv.gx" 2>/dev/null)" "-q" \
+        "(R2) graph-executor.sh notify: curl's FIRST argument is -q"
 }
 
 # ── the assertion suite (run against NEW = expect all-green; OLD = expect reds) ──
@@ -888,11 +1124,16 @@ suite() {
   check "${x1:-0}" 1 "(x) the capped alarm sends under its OWN label (bridge-backoff-capped), not the retrying one"
   check "${x2:-0}" 1 "(x) …and its TEXT tells the operator we STOPPED restarting and are still watching"
   check "${x3:-0}" 1 "(x) …and names the three things a human should check"
+
+  # ── scenario (y): the crash-loop alarm rides tg_send_tokenless ────────────────
+  # Runs as its OWN leg (above) because the block is main-loop code outside the bridge unit —
+  # suite() just invokes it so the NEW/OLD full-suite tallies include it.
+  crashloop_leg
 }
 
 # ── run NEW (expect all green) ───────────────────────────────────────────────
 echo "== assertions against NEW scripts/supervisor.sh =="
-UNIT_FILE="$WORK/unit.new.sh"
+UNIT_FILE="$WORK/unit.new.sh"; CRASH_SRC="$SUPERVISOR_NEW"
 if ! extract_unit "$SUPERVISOR_NEW" > "$UNIT_FILE"; then
   printf '  FAIL HARNESS: %s does not carry exactly one open + one close KICKOFF-BRIDGE-UNIT marker\n' "$SUPERVISOR_NEW"
   HARNESS_FATAL=1
@@ -903,44 +1144,129 @@ suite
 NEW_PASS=$PASS; NEW_FAIL=$FAIL
 
 # ── RED-ON-OLD: same assertions against HEAD's supervisor.sh must FAIL ────────
+# TWO independent legs, because the code lives in two places:
+#   leg 1 — the BRIDGE-UNIT scenarios: skippable when the extracted unit is byte-identical
+#           to HEAD's (the normal post-commit state). The skip text names what it covers.
+#   leg 2 — the CRASH-LOOP block (scenario y): MAIN-LOOP code outside the unit, so leg 1's
+#           identity says NOTHING about it — judged on the block's own byte-delta. This leg
+#           previously inherited leg 1's skip and sat unproven behind a "nothing new to
+#           prove" message while the real behavioral delta went unred.
 echo
 echo "== RED-on-old: same assertions against HEAD:scripts/supervisor.sh =="
 OLD_SRC="$WORK/supervisor.old.sh"
-if git -C "$SCRIPT_DIR" show HEAD:scripts/supervisor.sh > "$OLD_SRC" 2>/dev/null; then
-  UNIT_FILE="$WORK/unit.old.sh"
-  if ! extract_unit "$OLD_SRC" > "$UNIT_FILE"; then
-    printf '  FAIL HARNESS: HEAD:scripts/supervisor.sh does not carry exactly one open + one close marker\n'
-    HARNESS_FATAL=1
-  fi
-  # Load-bearing on THIS side too: a mis-bounded OLD unit fails every assertion, which the block
-  # below would read as a passing RED-on-old proof. Checking only the NEW side would leave the
-  # proof itself forgeable by a harness bug.
-  unit_bounds_ok "$UNIT_FILE" old || true
-  if cmp -s "$WORK/unit.new.sh" "$UNIT_FILE"; then
-    # Working-tree unit is byte-identical to HEAD's (the normal post-commit state):
-    # there is no behavioral delta to prove RED against — the proof is N/A, not failed.
-    # The skip triggers ONLY on byte-identical units, so a real delta can never dodge it.
-    RED_ON_OLD=skip; printf '  skip RED-on-old n/a — unit is byte-identical to HEAD (post-commit state; nothing new to prove)\n'
-  else
+RED_ON_OLD=0; RED_CRASH=0
+if ! git -C "$SCRIPT_DIR" show HEAD:scripts/supervisor.sh > "$OLD_SRC" 2>/dev/null; then
+  printf '  FAIL could not read HEAD:scripts/supervisor.sh to prove RED-on-old\n'
+else
+UNIT_FILE="$WORK/unit.old.sh"; CRASH_SRC="$OLD_SRC"
+if ! extract_unit "$OLD_SRC" > "$UNIT_FILE"; then
+  printf '  FAIL HARNESS: HEAD:scripts/supervisor.sh does not carry exactly one open + one close marker\n'
+  HARNESS_FATAL=1
+fi
+# Load-bearing on THIS side too: a mis-bounded OLD unit fails every assertion, which the block
+# below would read as a passing RED-on-old proof. Checking only the NEW side would leave the
+# proof itself forgeable by a harness bug.
+unit_bounds_ok "$UNIT_FILE" old || true
+
+# ── leg 1: the bridge-unit scenarios ──
+if cmp -s "$WORK/unit.new.sh" "$UNIT_FILE"; then
+  # Working-tree unit is byte-identical to HEAD's (the normal post-commit state): the UNIT
+  # legs have no behavioral delta to prove RED against — N/A, not failed. The skip triggers
+  # ONLY on byte-identical units, so a real unit delta can never dodge it. The crash-loop
+  # leg below is NOT covered by this skip and is judged separately.
+  RED_ON_OLD=skip
+  printf '  skip RED-on-old (bridge-unit legs) n/a — the bridge unit is byte-identical to HEAD; the crash-loop leg (y) is judged on its own delta below\n'
+else
   PASS=0; FAIL=0
   # whatever HEAD's unit lacks (originally the whole unit; now e.g. the v0.6 never-up belt)
   # must make at least one assertion fail loudly here — that failure IS the RED proof.
   suite >/dev/null 2>&1
   OLD_FAIL=$FAIL
   if [ "$OLD_FAIL" -gt 0 ]; then
-    RED_ON_OLD=1; printf '  ok   RED-on-old proven — %s assertion(s) FAIL against HEAD (behavior is genuinely new)\n' "$OLD_FAIL"
+    RED_ON_OLD=1; printf '  ok   RED-on-old proven (bridge-unit legs) — %s assertion(s) FAIL against HEAD (behavior is genuinely new)\n' "$OLD_FAIL"
   else
-    RED_ON_OLD=0; printf '  FAIL RED-on-old NOT proven — the suite passed on OLD code (it proves nothing)\n'
+    # A sender-only delta (e.g. the -q curlrc fix) is INVISIBLE to these stub-driven legs —
+    # the stub never reads curlrc — so zero fails here does not yet mean "unproven". Defer
+    # the verdict: leg 3 (below) drives the REAL curl against HEAD's sender and is the
+    # legitimate proof for exactly this delta class. Reconciled right after leg 3.
+    RED_ON_OLD=stubblind
   fi
-  fi
+fi
+
+# ── leg 2: the crash-loop block (scenario y), keyed on the BLOCK's own delta ──
+extract_crashblock "$OLD_SRC" "$WORK/crashblock.old.sh" || true
+if [ ! -s "$WORK/crashblock.old.sh" ] || cmp -s "$WORK/crashblock.new.sh" "$WORK/crashblock.old.sh"; then
+  RED_CRASH=skip
+  printf '  skip RED-on-old (crash-loop leg) n/a — the crash-loop block is byte-identical to HEAD (post-commit state)\n'
 else
-  RED_ON_OLD=0; printf '  FAIL could not read HEAD:scripts/supervisor.sh to prove RED-on-old\n'
+  PASS=0; FAIL=0
+  UNIT_FILE="$WORK/unit.old.sh"      # the OLD unit supplies the OLD tg_send_tokenless + log()
+  CRASH_SRC="$OLD_SRC"
+  crashloop_leg > "$WORK/crash.old.out" 2>&1
+  OLD_CRASH_FAIL=$FAIL
+  if [ "$OLD_CRASH_FAIL" -gt 0 ]; then
+    RED_CRASH=1
+    printf '  ok   RED-on-old (crash-loop leg) proven — %s assertion(s) FAIL against HEAD'"'"'s inline-curl block:\n' "$OLD_CRASH_FAIL"
+    grep '^  FAIL' "$WORK/crash.old.out" | sed 's/^/         RED /' || true
+  else
+    RED_CRASH=0
+    printf '  FAIL RED-on-old (crash-loop leg) NOT proven — the (y) leg passed on the OLD block:\n'
+    tail -6 "$WORK/crash.old.out" | sed 's/^/       /'
+  fi
+fi
+
+# ── leg 3: the curlrc-leak leg, keyed on the SEND SITE's own delta ────────────
+# The unit legs CANNOT see a -q delta — their curl is a STUB, which by construction never
+# reads curlrc — so a sender change re-arms leg 1 with nothing stub-observable in it. This
+# leg is that delta's proof: judged on the extracted tg_send_tokenless's own byte-delta,
+# run against HEAD's sender, where the leak assert must FAIL (the whole point of the fix).
+# The (R2) argv asserts stay always-on gates on the live files in every NEW run; only
+# supervisor.sh's sender re-arms this proof (session-run.sh/graph-executor.sh deltas are
+# caught by their NEW-run gates directly).
+awk '/^tg_send_tokenless\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$SUPERVISOR_NEW" > "$WORK/tg.send.new.sh" 2>/dev/null
+awk '/^tg_send_tokenless\(\) \{/{f=1} f{print} f&&/^\}/{exit}' "$OLD_SRC" > "$WORK/tg.send.old.sh" 2>/dev/null
+if [ ! -s "$WORK/tg.send.old.sh" ] || cmp -s "$WORK/tg.send.new.sh" "$WORK/tg.send.old.sh"; then
+  RED_CURLRC=skip
+  printf '  skip RED-on-old (curlrc leg) n/a — the tg_send_tokenless sender is byte-identical to HEAD\n'
+else
+  PASS=0; FAIL=0
+  CURLRC_SRC="$OLD_SRC" curlrc_leg old > "$WORK/curlrc.old.out" 2>&1
+  OLD_CURLRC_FAIL=$FAIL
+  if [ "$OLD_CURLRC_FAIL" -gt 0 ]; then
+    RED_CURLRC=1
+    printf '  ok   RED-on-old (curlrc leg) proven — %s assertion(s) FAIL against HEAD'"'"'s sender:\n' "$OLD_CURLRC_FAIL"
+    grep '^  FAIL' "$WORK/curlrc.old.out" | sed 's/^/         RED /' || true
+  else
+    RED_CURLRC=0
+    printf '  FAIL RED-on-old (curlrc leg) NOT proven — the curlrc leg passed on the OLD sender:\n'
+    tail -6 "$WORK/curlrc.old.out" | sed 's/^/       /'
+  fi
+fi
+
+# ── reconcile the deferred unit-leg verdict (see leg 1's stubblind branch) ────
+case "${RED_ON_OLD:-0}" in
+  stubblind)
+    if [ "${RED_CURLRC:-0}" = "1" ]; then
+      RED_ON_OLD=1
+      printf '  ok   RED-on-old (unit legs) proven via the curlrc leg — the unit delta is invisible to stub-curl; leg 3 drove the REAL curl against HEAD'"'"'s sender and it went RED\n'
+    else
+      RED_ON_OLD=0
+      printf '  FAIL RED-on-old NOT proven — the unit suite passed on OLD code and no curlrc-leg proof covered the delta\n'
+    fi ;;
+esac
 fi
 
 echo
+echo "== curlrc-leak + argv-shape (rider fix C): the REAL curl vs a hostile \$CURL_HOME =="
+PASS=0; FAIL=0
+curlrc_leg live
+RIDER_PASS=$PASS; RIDER_FAIL=$FAIL
+
+echo
 echo "== summary =="
-printf 'NEW: pass=%s fail=%s   RED-on-old proven=%s   harness=%s\n' \
-  "$NEW_PASS" "$NEW_FAIL" "${RED_ON_OLD:-0}" "$([ "$HARNESS_FATAL" -eq 0 ] && echo ok || echo BROKEN)"
+printf 'NEW: pass=%s fail=%s   RED-on-old (unit)=%s   RED-on-old (crash-loop)=%s   RED-on-old (curlrc)=%s   curlrc-leg=%s/%s   harness=%s\n' \
+  "$NEW_PASS" "$NEW_FAIL" "${RED_ON_OLD:-0}" "${RED_CRASH:-0}" "${RED_CURLRC:-0}" \
+  "$RIDER_PASS" "$RIDER_FAIL" "$([ "$HARNESS_FATAL" -eq 0 ] && echo ok || echo BROKEN)"
 # HARNESS_FATAL is checked FIRST and unconditionally: if the extraction was mis-bounded, neither
 # the pass count nor the RED-on-old proof means anything, and reporting a number would be worse
 # than reporting nothing.
@@ -948,6 +1274,10 @@ if [ "$HARNESS_FATAL" -ne 0 ]; then
   echo "SELFTEST FAIL — harness broken (extraction bounds), results above are MEANINGLESS"; exit 1
 fi
 case "${RED_ON_OLD:-0}" in 1|skip)
-  if [ "$NEW_FAIL" -eq 0 ]; then echo "SELFTEST PASS"; exit 0; fi ;;
+  case "${RED_CRASH:-0}" in 1|skip)
+    case "${RED_CURLRC:-0}" in 1|skip)
+      if [ "$NEW_FAIL" -eq 0 ] && [ "${RIDER_FAIL:-0}" -eq 0 ]; then echo "SELFTEST PASS"; exit 0; fi ;;
+    esac ;;
+  esac ;;
 esac
 echo "SELFTEST FAIL"; exit 1

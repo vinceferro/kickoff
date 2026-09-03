@@ -214,15 +214,34 @@ shim_out="$("$SHIM" show foo bar 2>&1)" || shim_rc=$?
 chk "mc shim exits 0 when the engine is present"          "[ $shim_rc -eq 0 ]"
 chk "mc shim passes args through (STUB-MC-ARGS: show foo bar)" \
   "printf '%s' \"\$shim_out\" | grep -q 'STUB-MC-ARGS: show foo bar'"
-# engine MISSING: rename the stub's mc-update.py → a CLEAR message + non-zero, never a raw bash error.
+# engine component MISSING while the CORE DIR RESOLVES — the public-line shape: the pinned
+# clone is present and correct, but mission-control/ is ratified-private and never travels on
+# the public release line. The shim must name THAT state and must NOT point at `kickoff pull`
+# (which cannot deliver the component on that line — case (b) is permanent), while still
+# failing closed. The old message misdiagnosed this as "engine not present", a fix that can
+# never work.
 mv "$STUBCORE/mission-control/mc-update.py" "$STUBCORE/mission-control/mc-update.py.bak"
 miss_rc=0
 miss_out="$("$SHIM" show 2>&1)" || miss_rc=$?
-chk "mc shim exits NON-zero when the engine is missing"   "[ $miss_rc -ne 0 ]"
-chk "mc shim prints the CLEAR 'engine not present' message" \
-  "printf '%s' \"\$miss_out\" | grep -q 'kickoff engine not present'"
+chk "mc shim exits NON-zero when the core resolves but the component is missing" \
+  "[ $miss_rc -ne 0 ]"
+chk "mc shim names the real state (core present, Mission Control not shipped)" \
+  "printf '%s' \"\$miss_out\" | grep -q 'does not ship Mission Control'"
+chk "mc shim does NOT suggest \`kickoff pull\` for a core without mission-control/ (it cannot help)" \
+  "! printf '%s' \"\$miss_out\" | grep -q 'kickoff pull'"
 chk "mc shim does NOT emit a raw bash 'No such file' error" \
   "! printf '%s' \"\$miss_out\" | grep -qi 'No such file'"
+# engine DIR missing entirely (the original case — e.g. the clone was never pulled): the
+# classic message is CORRECT there, because `kickoff pull` genuinely fixes it. Keep it.
+mv "$STUBCORE/mission-control/mc-update.py.bak" "$STUBCORE/mission-control/mc-update.py"
+printf 'export KICKOFF_CORE_DIR="%s"\n' "$STUBCORE/no-such-core" > "$SHIMFIX/.kickoff/instance.env"
+nodir_rc=0
+nodir_out="$("$SHIM" show 2>&1)" || nodir_rc=$?
+chk "mc shim exits NON-zero when the engine dir is missing" \
+  "[ $nodir_rc -ne 0 ]"
+chk "mc shim keeps the classic 'engine not present' message for a MISSING core dir" \
+  "printf '%s' \"\$nodir_out\" | grep -q 'kickoff engine not present'"
+printf 'export KICKOFF_CORE_DIR="%s"\n' "$STUBCORE" > "$SHIMFIX/.kickoff/instance.env"   # restore
 # manifest: the shim recorded as created/seam with a hash that matches the on-disk bytes.
 MSHIM="$SHIMFIX/.kickoff/adopt-manifest.json"
 chk "manifest recorded the mc shim as created/seam" \
@@ -275,6 +294,141 @@ chk "hand-edited seam: --force-regenerate restores the pinned template" \
 # integration: cmd_pull actually WIRES sync-seams (after the core.lock write, before preflight).
 chk "cmd_pull wires the seam-sync step (kickoff calls sync-seams)" \
   "grep -q 'sync-seams --repo' \"$REPO/scripts/kickoff\""
+echo
+
+# ── (E §0831-roll) reclass-live-config — the SANCTIONED escape for ORG-EVOLVED seams ────────
+# The 2026-08-31 roll repaired three orgs BY HAND: reclass seam → live-config in the manifest
+# (content untouched; seam-sync + preflight #8 stand down; eject still reverses like `created` —
+# the schema's own live-config semantics, header §THE SCHEMA). This verb makes that repair a
+# first-class, auditable operation: DEFAULT is a dry-run listing exactly the sync-seams refusal
+# set; --accept backs the manifest up (never clobbering) and flips ONLY the class field — never
+# the file bytes, never any other entry field.
+echo "6b. reclass-live-config: reclass an org-evolved seam to live-config (governance only; bytes preserved)"
+RL="$(mk)"; mkdir -p "$RL/.kickoff/bin"
+printf '%s' "$OLD_SHIM" > "$RL/.kickoff/bin/mc"
+python3 "$AM" record --repo "$RL" --path .kickoff/bin/mc --action created --class seam --source core-vOLD >/dev/null
+printf '# HAND-EDIT by the operator (org-evolved in the live repo)\n' >> "$RL/.kickoff/bin/mc"
+RL_FILE_SHA="$(sha256sum "$RL/.kickoff/bin/mc" | awk '{print $1}')"
+RLMAN="$RL/.kickoff/adopt-manifest.json"
+RL_WAS="$(sha256sum "$RLMAN" | awk '{print $1}')"
+RL_REC="$(python3 -c "import json;print([x for x in json.load(open('$RLMAN'))['entries'] if x['path']=='.kickoff/bin/mc'][0]['sha256_at_write'])")"
+# the fixture IS the refusal set: sync-seams must refuse it first (sharpness, negative control)
+RLSYNC_RC=0
+RLSYNC_OUT="$(python3 "$AM" sync-seams --repo "$RL" --source core-vNEW 2>&1)" || RLSYNC_RC=$?
+chk "reclass precondition: the evolved seam REFUSES sync-seams (the candidate is really in the refusal set)" "[ $RLSYNC_RC -ne 0 ]"
+
+# (a) DEFAULT = dry-run: list the candidate (recorded vs actual hash), write NOTHING
+RLDRY_RC=0
+RLDRY_OUT="$(python3 "$AM" reclass-live-config --repo "$RL" 2>&1)" || RLDRY_RC=$?
+chk "dry-run: exits 0"                                                       "[ $RLDRY_RC -eq 0 ]"
+chk "dry-run: NAMES the candidate path"                                      "printf '%s' \"\$RLDRY_OUT\" | grep -qF '.kickoff/bin/mc'"
+chk "dry-run: shows the recorded-vs-actual sha prefixes" \
+  "printf '%s' \"\$RLDRY_OUT\" | grep -qF \"${RL_REC:0:12}\" && printf '%s' \"\$RLDRY_OUT\" | grep -qF \"${RL_FILE_SHA:0:12}\""
+chk "dry-run: states what reclass changes (governance only; content untouched)" \
+  "printf '%s' \"\$RLDRY_OUT\" | grep -qi 'live-config' && printf '%s' \"\$RLDRY_OUT\" | grep -qi 'untouched'"
+chk "dry-run: writes NOTHING — the manifest is byte-identical"               "[ \"$RL_WAS\" = \"\$(sha256sum "$RLMAN" | awk '{print \$1}')\" ]"
+chk "dry-run: creates NO backup"                                             "! ls \"$RL/.kickoff/\" 2>/dev/null | grep -q 'pre-reclass'"
+
+# (b) --accept: flips ONLY the class field; a timestamped backup precedes the write
+RLACC_RC=0
+RLACC_OUT="$(python3 "$AM" reclass-live-config --repo "$RL" --accept 2>&1)" || RLACC_RC=$?
+RL_BAK="$(ls "$RL/.kickoff/" 2>/dev/null | grep 'adopt-manifest.json.pre-reclass-' || true)"
+chk "accept: exits 0"                                                        "[ $RLACC_RC -eq 0 ]"
+chk "accept: the entry's class is now live-config" \
+  "python3 -c \"import json;e=[x for x in json.load(open('$RLMAN'))['entries'] if x['path']=='.kickoff/bin/mc'][0];assert e['class']=='live-config'\""
+chk "accept: exactly ONE backup exists"                                      "[ -n \"$RL_BAK\" ] && [ \"\$(ls \"$RL/.kickoff/\" | grep -c 'adopt-manifest.json.pre-reclass-')\" = 1 ]"
+chk "accept: the summary names the backup path (the audit trail)"            "printf '%s' \"\$RLACC_OUT\" | grep -qF \"$RL/.kickoff/$RL_BAK\""
+chk "accept: the backup holds the PRE-reclass manifest (class seam there, same recorded hash)" \
+  "python3 -c \"import json;b=[x for x in json.load(open('$RL/.kickoff/$RL_BAK'))['entries'] if x['path']=='.kickoff/bin/mc'][0];assert b['class']=='seam' and b['sha256_at_write']=='$RL_REC'\""
+chk "accept: the seam FILE is byte-identical (sha before == after)"          "[ \"$RL_FILE_SHA\" = \"\$(sha256sum "$RL/.kickoff/bin/mc" | awk '{print \$1}')\" ]"
+chk "accept: sha256_at_write UNTOUCHED (still the pre-reclass record)"       "[ \"\$(python3 -c \"import json;print([x for x in json.load(open('$RLMAN'))['entries'] if x['path']=='.kickoff/bin/mc'][0]['sha256_at_write'])\")\" = \"$RL_REC\" ]"
+chk "accept: every OTHER entry field unchanged (backup entry minus class == current entry minus class)" \
+  "python3 -c \"import json;c=[x for x in json.load(open('$RLMAN'))['entries'] if x['path']=='.kickoff/bin/mc'][0];b=[x for x in json.load(open('$RL/.kickoff/$RL_BAK'))['entries'] if x['path']=='.kickoff/bin/mc'][0];c.pop('class');b.pop('class');assert c==b,(c,b)\""
+
+# (c) the point of the whole move: sync-seams now PASSES
+RLSYNC2_RC=0
+python3 "$AM" sync-seams --repo "$RL" --source core-vNEW >/dev/null 2>&1 || RLSYNC2_RC=$?
+chk "post-reclass: sync-seams now PASSES (rc 0 — the reclassed entry is out of the walk)" "[ $RLSYNC2_RC -eq 0 ]"
+# (d) preflight #8's whole-file hash set (the preflight.sh:686 jq selection) no longer holds the path
+chk "post-reclass: preflight #8's whole-file hash set no longer contains the path" \
+  "[ -z \"\$(jq -r '.entries[]? | select(.class==\\\"seam\\\") | select(.action==\\\"created\\\") | select(.sha256_at_write != null) | [.path, .sha256_at_write] | @tsv' \"$RLMAN\" 2>/dev/null | grep -F '.kickoff/bin/mc')\" ]"
+# (e) the manifest mutation must NOT break eject's reverse behaviour. live-config is "reversed
+#     like created, NOT kept-by-default" (schema header) — reverse consults the recorded hash,
+#     never the class. Two legs prove it:
+#     (e1) VERDICT EQUIVALENCE — an identical UN-reclassed twin gets the SAME verdict (both KEEP:
+#          the evolved bytes diverge from the record, and never-silent-delete protects the org's
+#          content before AND after the reclass); and
+#     (e2) REMOVAL on hash-match — once the file bytes match the record again, the live-config
+#          entry DELETES the file, exactly as a created row always has.
+RLE="$(mk)"; mkdir -p "$RLE/.kickoff/bin"
+printf '%s' "$OLD_SHIM" > "$RLE/.kickoff/bin/mc"
+python3 "$AM" record --repo "$RLE" --path .kickoff/bin/mc --action created --class seam --source core-vOLD >/dev/null
+printf '# HAND-EDIT by the operator (org-evolved in the live repo)\n' >> "$RLE/.kickoff/bin/mc"   # the SAME evolution
+RLE_REV="$(python3 "$AM" reverse --repo "$RLE" 2>&1)"
+RL_REV2="$(python3 "$AM" reverse --repo "$RL" 2>&1)"
+chk "post-reclass (e1): the UN-reclassed twin reverse KEEPped the diverged file (the divergence gate, not the class)" \
+  "printf '%s' \"\$RLE_REV\" | grep -q '\[ keep \]'"
+chk "post-reclass (e1): the reclassed manifest's reverse verdict is IDENTICAL to the twin's (same KEEP — the class flip changed nothing)" \
+  "[ \"\$(printf '%s' \"\$RL_REV2\" | grep -c '\[ keep \]')\" = \"\$(printf '%s' \"\$RLE_REV\" | grep -c '\[ keep \]')\" ] && printf '%s' \"\$RL_REV2\" | grep -q '\[ keep \]'"
+chk "post-reclass (e1): the evolved file survived BOTH reverses (never silent-deleted)" \
+  "[ -e \"$RLE/.kickoff/bin/mc\" ] && [ -e \"$RL/.kickoff/bin/mc\" ]"
+printf '%s' "$OLD_SHIM" > "$RL/.kickoff/bin/mc"   # the operator reverts their evolution → bytes == record again
+python3 "$AM" reverse --repo "$RL" >/dev/null 2>&1
+chk "post-reclass (e2): with bytes back at the record, reverse REMOVES the file (live-config is reversed like created)" \
+  "[ ! -e \"$RL/.kickoff/bin/mc\" ]"
+
+# --path filter: surgical — only the NAMED candidate(s) reclass
+RL2="$(mk)"; mkdir -p "$RL2/.kickoff/bin"
+printf '%s' "$OLD_SHIM" > "$RL2/.kickoff/bin/mc"
+python3 "$AM" record --repo "$RL2" --path .kickoff/bin/mc --action created --class seam --source core-vOLD >/dev/null
+printf '# EVOLVED-A\n' >> "$RL2/.kickoff/bin/mc"
+printf '%s' "$OLD_SHIM" > "$RL2/.kickoff/bin/scan"
+python3 "$AM" record --repo "$RL2" --path .kickoff/bin/scan --action created --class seam --source core-vOLD >/dev/null
+printf '# EVOLVED-B\n' >> "$RL2/.kickoff/bin/scan"
+RL2_RC=0
+python3 "$AM" reclass-live-config --repo "$RL2" --accept --path .kickoff/bin/mc >/dev/null 2>&1 || RL2_RC=$?
+RL2MAN="$RL2/.kickoff/adopt-manifest.json"
+chk "--path: exits 0 and ONLY the named entry reclassed (mc → live-config)" \
+  "[ $RL2_RC -eq 0 ] && python3 -c \"import json;e=[x for x in json.load(open('$RL2MAN'))['entries'] if x['path']=='.kickoff/bin/mc'][0];assert e['class']=='live-config'\""
+chk "--path: the UN-named evolved seam stays class seam (untouched)" \
+  "python3 -c \"import json;e=[x for x in json.load(open('$RL2MAN'))['entries'] if x['path']=='.kickoff/bin/scan'][0];assert e['class']=='seam'\""
+
+# a LEGACY/HAND-MUTATED seam: NO sha256_at_write at all (a pre-hash manifest, or the field
+# stripped by hand). sync-seams still REFUSES it (the recorded hash is None, so the
+# modified-since-generation arm can never match), yet the reclass walk SKIPPED hash-less
+# entries — a dead-end: refused on every pull, invisible to the escape hatch. Reclass to
+# live-config is exactly right here: no hash to preserve, sync stands down, bytes untouched.
+RL4="$(mk)"; mkdir -p "$RL4/.kickoff/bin"
+printf '%s' "$OLD_SHIM" > "$RL4/.kickoff/bin/mc"
+python3 "$AM" record --repo "$RL4" --path .kickoff/bin/mc --action created --class seam --source core-vOLD >/dev/null
+printf '# HAND-MUTATED beyond any record\n' >> "$RL4/.kickoff/bin/mc"
+python3 -c "import json;p='$RL4/.kickoff/adopt-manifest.json';m=json.load(open(p));[e.pop('sha256_at_write') for e in m['entries'] if e['path']=='.kickoff/bin/mc'];json.dump(m,open(p,'w'),indent=2)"
+RL4_FILE_SHA="$(sha256sum "$RL4/.kickoff/bin/mc" | awk '{print $1}')"
+RL4MAN="$RL4/.kickoff/adopt-manifest.json"
+# negative control: the hash-less seam really is REFUSED by sync-seams (the dead-end is real)
+RL4SYNC_RC=0
+python3 "$AM" sync-seams --repo "$RL4" --source core-vNEW >/dev/null 2>&1 || RL4SYNC_RC=$?
+chk "no-record precondition: sync-seams REFUSES the hash-less seam (the dead-end the operator is stuck in)" "[ $RL4SYNC_RC -ne 0 ]"
+RL4_RC=0
+RL4_OUT="$(python3 "$AM" reclass-live-config --repo "$RL4" 2>&1)" || RL4_RC=$?
+chk "no-record dry-run: exits 0 and LISTS the hash-less entry (pre-fix: skipped → dead-end)" \
+  "[ $RL4_RC -eq 0 ] && printf '%s' \"\$RL4_OUT\" | grep -qF '.kickoff/bin/mc'"
+chk "no-record dry-run: prints the DISTINCT legacy note (not a fake recorded-vs-actual pair)" \
+  "printf '%s' \"\$RL4_OUT\" | grep -qi 'no recorded hash'"
+RL4ACC_RC=0
+python3 "$AM" reclass-live-config --repo "$RL4" --accept >/dev/null 2>&1 || RL4ACC_RC=$?
+chk "no-record accept: exits 0; entry reclassed; sync-seams now PASSES; file bytes untouched" \
+  "[ $RL4ACC_RC -eq 0 ] && python3 -c \"import json;e=[x for x in json.load(open('$RL4MAN'))['entries'] if x['path']=='.kickoff/bin/mc'][0];assert e['class']=='live-config'\" && python3 \"$AM\" sync-seams --repo \"$RL4\" --source core-vNEW >/dev/null 2>&1 && [ \"\$(sha256sum "$RL4/.kickoff/bin/mc" | awk '{print \$1}')\" = \"$RL4_FILE_SHA\" ]"
+
+# a manifest with NO evolved seam: a clean no-op in BOTH modes (rc 0, nothing written, no backup)
+RL3="$(mk)"; mkdir -p "$RL3/.kickoff/bin"
+printf '%s' "$OLD_SHIM" > "$RL3/.kickoff/bin/mc"
+python3 "$AM" record --repo "$RL3" --path .kickoff/bin/mc --action created --class seam --source core-vOLD >/dev/null
+RL3MAN="$RL3/.kickoff/adopt-manifest.json"; RL3_WAS="$(sha256sum "$RL3MAN" | awk '{print $1}')"
+RL3_RC=0
+RL3_OUT="$(python3 "$AM" reclass-live-config --repo "$RL3" --accept 2>&1)" || RL3_RC=$?
+chk "no candidates: --accept exits 0, writes NOTHING (byte-identical manifest, no backup)" \
+  "[ $RL3_RC -eq 0 ] && [ \"$RL3_WAS\" = \"\$(sha256sum "$RL3MAN" | awk '{print \$1}')\" ] && ! ls \"$RL3/.kickoff/\" | grep -q 'pre-reclass'"
 echo
 
 # ── (D Fix 9) preflight #8: adopter seam integrity, fail-closed absence + drift ─────

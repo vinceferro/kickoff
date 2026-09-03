@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # remote-normalize-selftest.sh — guard the core-clone origin check's URL normalization.
 #
-# THE BUG (2026-07-20): `kickoff pull` refused a real adopter because the shared
+# THE BUG (2026-07-20): `kickoff pull` refused a real adopter (bliz) because the shared
 # core clone's origin was `https://github.com/…` while KICKOFF_CORE_REMOTE resolved to
 # `git@github.com:…` — the SAME repo over a different transport. The guard compared the
 # two URLs LITERALLY, so a fleet whose adopters disagree on ssh-vs-https could never all
@@ -34,14 +34,14 @@ t() { # $1=desc  $2=got  $3=expected
 norm() { _normalize_git_remote "$1"; }
 eq()   { [ "$(norm "$1")" = "$(norm "$2")" ] && echo EQUAL || echo DIFF; }
 
-SSH='git@github.com:vinceferro/kickoff.git'
-HTTPS='https://github.com/vinceferro/kickoff.git'
-SSHURL='ssh://git@github.com/vinceferro/kickoff.git'
-NOGIT='https://github.com/vinceferro/kickoff'
+SSH='git@github.com:vinceferro/claude-kickoff.git'
+HTTPS='https://github.com/vinceferro/claude-kickoff.git'
+SSHURL='ssh://git@github.com/vinceferro/claude-kickoff.git'
+NOGIT='https://github.com/vinceferro/claude-kickoff'
 OTHER='git@github.com:vinceferro/other-repo.git'
 OWNER='git@github.com:someoneelse/claude-kickoff.git'
-HOST='https://gitlab.com/vinceferro/kickoff.git'
-CANON='github.com/vinceferro/kickoff'
+HOST='https://gitlab.com/vinceferro/claude-kickoff.git'
+CANON='github.com/vinceferro/claude-kickoff'
 
 echo "— RED control: the pre-fix LITERAL compare would reject the same repo —"
 t "raw https != raw ssh (the bug the fix removes)" "$([ "$HTTPS" != "$SSH" ] && echo UNEQUAL || echo EQUAL)" "UNEQUAL"
@@ -66,27 +66,27 @@ t "different host → DIFF"        "$(eq "$HOST"  "$HTTPS")" "DIFF"
 # a clone of a completely different repo. Loosening a fail-closed guard is the one direction that must
 # never regress, so these assertions are the point of this file, not an extra.
 # ── FALSE-REJECT controls: a VALID url for the same repo must not be refused ──────────────────────
-# Found by an adopter-side coordinator reviewing core-v0.16 from the adopter side, by running the shipped
+# Found by the Bliz coordinator reviewing core-v0.16 from the adopter side, by running the shipped
 # function rather than reading it. All three fail CLOSED (the safe direction) — but each produces a
 # "core clone origin MISMATCH" for a URL that is perfectly legal, and the message blames your config
 # rather than the spelling, so the diagnosis cost is high. `repo.git/` is the one that bites for real:
 # git accepts it and tooling emits it.
 echo "— FALSE-REJECT controls: legal spellings of the SAME repo must normalize equal —"
-t "trailing slash after .git (repo.git/)" "$(eq 'https://github.com/vinceferro/kickoff.git/' "$HTTPS")" "EQUAL"
-t "uppercase scheme (HTTPS://)"           "$(eq 'HTTPS://github.com/vinceferro/kickoff' "$HTTPS")"        "EQUAL"
-t "uppercase host (RFC: case-insensitive)" "$(eq 'https://GITHUB.COM/vinceferro/kickoff' "$HTTPS")"       "EQUAL"
-t "bare trailing slash still fine"        "$(eq 'https://github.com/vinceferro/kickoff/' "$HTTPS")"       "EQUAL"
+t "trailing slash after .git (repo.git/)" "$(eq 'https://github.com/vinceferro/claude-kickoff.git/' "$HTTPS")" "EQUAL"
+t "uppercase scheme (HTTPS://)"           "$(eq 'HTTPS://github.com/vinceferro/claude-kickoff' "$HTTPS")"        "EQUAL"
+t "uppercase host (RFC: case-insensitive)" "$(eq 'https://GITHUB.COM/vinceferro/claude-kickoff' "$HTTPS")"       "EQUAL"
+t "bare trailing slash still fine"        "$(eq 'https://github.com/vinceferro/claude-kickoff/' "$HTTPS")"       "EQUAL"
 # The PATH stays case-SENSITIVE: only the host is case-insensitive per RFC, and forges differ on
 # whether org/repo are. Lowercasing the whole URL would make two genuinely different repos compare
 # equal — a false-accept, the direction that must never regress.
 t "path case is PRESERVED (not a false-accept)" "$(eq 'https://github.com/vinceferro/Claude-Kickoff' "$HTTPS")"  "DIFF"
 
 echo "— HOSTILE controls: an '@' in the PATH must not launder a foreign host —"
-t "evil host, canonical tail after @"      "$(eq 'https://evil.com/a@github.com/vinceferro/kickoff' "$HTTPS")" "DIFF"
-t "evil host, bare @ before canonical"     "$(eq 'https://evil.com/@github.com/vinceferro/kickoff' "$HTTPS")" "DIFF"
-t "evil host over ssh://"                  "$(eq 'ssh://evil.com/x@github.com/vinceferro/kickoff' "$HTTPS")" "DIFF"
-t "evil host, scp-like with @ in path"     "$(eq 'evil.com:mirror@github.com/vinceferro/kickoff' "$HTTPS")" "DIFF"
-t "canonical host, @ inside the repo path" "$(norm 'https://github.com/vinceferro/kickoff/a@b')" "github.com/vinceferro/kickoff/a@b"
+t "evil host, canonical tail after @"      "$(eq 'https://evil.com/a@github.com/vinceferro/claude-kickoff' "$HTTPS")" "DIFF"
+t "evil host, bare @ before canonical"     "$(eq 'https://evil.com/@github.com/vinceferro/claude-kickoff' "$HTTPS")" "DIFF"
+t "evil host over ssh://"                  "$(eq 'ssh://evil.com/x@github.com/vinceferro/claude-kickoff' "$HTTPS")" "DIFF"
+t "evil host, scp-like with @ in path"     "$(eq 'evil.com:mirror@github.com/vinceferro/claude-kickoff' "$HTTPS")" "DIFF"
+t "canonical host, @ inside the repo path" "$(norm 'https://github.com/vinceferro/claude-kickoff/a@b')" "github.com/vinceferro/claude-kickoff/a@b"
 
 echo
 if [ "$fail" -eq 0 ]; then echo "PASS: $pass/$((pass+fail)) assertions green"; exit 0

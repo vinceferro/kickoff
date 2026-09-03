@@ -93,6 +93,29 @@ pre-push:
       skip:
         - merge
         - rebase
+    # repo-config pins (the 2026-09-01 triple-lane wedge): the core repo's OWN dispatch
+    # config must name models that RESOLVE in a worktree's view (tracked bytes + global
+    # config) — no agent-level model pin in the coordinator charter, no delisted model
+    # name, no inline gateway key in tracked bytes, default model present in the global
+    # provider list. RED controls run the detectors on the incident's real inputs.
+    repo-config-pin-test:
+      run: bash scripts/repo-config-pin-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # adopt-migrate (origin migration): the fleet/stranger turnkey that moves a pull-adopter
+    # between core ORIGINS (old repo → clean public line, first tag a pre-release). Proves the
+    # fail-closed refusals (origin unreachable · tag missing · existence-contract violation —
+    # all leaving the adopter BYTE-UNTOUCHED), the alpha bare-pull seam (auto-select refuses a
+    # pre-release tag, so the turnkey names it), the green migration's CONSUMED state (the
+    # adopter's own instance.env/clone-origin/core.lock/registry row read back + a real re-pull
+    # PULL OK), idempotent re-run, and the rollback artifact. Two-repo fixture topology with NO
+    # shared history — the deploy shape, never the dev checkout.
+    adopt-migrate-test:
+      run: bash scripts/adopt-migrate-selftest.sh
+      skip:
+        - merge
+        - rebase
     # THE INTEGRATION PROOF (journey-e2e): the per-slice selftests above each prove ONE slice; this
     # drives realistic brownfield + greenfield repos through the WHOLE journey against the REAL engine
     # — adopt → the SIMULATED /adopt session (crew/tracker/memory/gates authored + RECORDED, the half a
@@ -326,6 +349,14 @@ pre-push:
         - rebase
     auto-pickup-test:
       run: bash scripts/auto-pickup-selftest.sh
+      skip:
+        - merge
+        - rebase
+    # up --dir launch-config precedence (v1.0.2-alpha): same discovery rule as the comment below —
+    # unwired = invisible to the release gate. Proves the TARGET org's instance.env wins its own
+    # launch (argv > true pre-set env > target file) and the caller's file-sourced config never rides across --dir.
+    up-dir-config-test:
+      run: bash scripts/up-dir-config-selftest.sh
       skip:
         - merge
         - rebase

@@ -506,7 +506,10 @@ bridge_boot_reset() { BRIDGE_BOOT_FAILS=0; BRIDGE_BOOT_BACKOFF_N=0; BRIDGE_BOOT_
 # THE LEAK CONSTRAINT is the hard part, because the bot token is IN THE URL: keep `-o /dev/null`
 # (never capture the body), keep `2>/dev/null` (curl's stderr can echo the URL), and sanitise
 # `-w '%{http_code}'` down to digits before it can reach `log`. Only digits and the caller's fixed
-# label can ever be printed. Still non-fatal (the whole body stays in a `( … ) || true` subshell,
+# label can ever be printed. And `-q` must stay curl's FIRST argument: curl reads ~/.curlrc /
+# $CURL_HOME/.curlrc BEFORE any option, so a trace-ascii/output line in a user's curl config would
+# write the token-bearing URL to disk — `-q` suppresses that default config (and ONLY it: `-K -`
+# stdin still applies). Still non-fatal (the whole body stays in a `( … ) || true` subshell,
 # a log line is not an action) and still inert when the tooling/config is missing — but INERT NOW
 # SAYS SO, since silent inertness is the exact bug class this closes.
 tg_send_tokenless() {
@@ -534,7 +537,7 @@ tg_send_tokenless() {
       exit 0
     fi
     _code="$(printf 'url=%s\n' "https://api.telegram.org/bot${_token}/sendMessage" \
-      | curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+      | curl -q -s -o /dev/null -w '%{http_code}' --max-time 10 \
           --data-urlencode "chat_id=${_chat}" \
           --data-urlencode "text=${_text}" \
           -K - 2>/dev/null || true)"
@@ -1544,38 +1547,18 @@ while true; do
       fi
     fi
     # honest alarm, fired ONCE as the streak crosses the alarm point: a DISTINCT degraded
-    # message, NOT the cheerful "org is cooking" ping (#8). The whole send is a ( ... ) || true
-    # subshell so the bot token never lands in a supervisor-scope var and no curl failure can
-    # abort this loop; it reuses session-run.sh's tokenless recipe (token on curl stdin via
-    # -K -, never argv). No quota-reset time is claimed (the session's stdout is /dev/null).
+    # message, NOT the cheerful "org is cooking" ping (#8). Routed through tg_send_tokenless
+    # like every other alarm — the shared send derives the channel/settings/access.json itself,
+    # keeps the bot token off argv (curl `-K -`), and LOGS the outcome (`tg-send: delivered` /
+    # `FAILED` / an explicit skip), so this path can never go silent again: the old inline curl
+    # subshell had `-o /dev/null`, no code capture, and silent `exit 0`s when inputs were
+    # missing. No quota-reset time is claimed (the session's stdout is /dev/null).
     if crashloop_alarm_due "$FASTDEATH_STREAK"; then
       # bookmark this streak so the NEXT re-alarm waits a bounded interval (finding #2) — never
       # every restart. Set before the send so a skipped/failed send still advances the bookmark.
       FASTDEATH_LAST_ALARM_STREAK="$FASTDEATH_STREAK"
       log "crash-loop: $FASTDEATH_STREAK fast deaths (<${FASTDEATH_THRESHOLD_SECONDS}s each) in a row; exponential backoff engaged (${backoff}s); sending the degraded alarm (re-alarm cadence every ${FASTDEATH_REALARM_EVERY})"
-      if command -v jq >/dev/null 2>&1 && command -v curl >/dev/null 2>&1; then
-        (
-          _cb_tsd="${TELEGRAM_STATE_DIR:-}"
-          _cb_ienv="${INSTANCE_ENV:-$KICKOFF_DIR/instance.env}"
-          if [ -z "$_cb_tsd" ] && [ -f "$_cb_ienv" ]; then
-            _cb_tsd="$( set +eu; . "$_cb_ienv" >/dev/null 2>&1 || true; printf '%s' "${TELEGRAM_STATE_DIR:-}" )"
-          fi
-          _cb_settings="${SETTINGS_FILE:-$REPO_DIR/.claude/settings.local.json}"
-          _cb_access="$_cb_tsd/access.json"
-          [ -n "$_cb_tsd" ] && [ -f "$_cb_settings" ] && [ -f "$_cb_access" ] || exit 0
-          _cb_token="$(jq -r '.env.TELEGRAM_BOT_TOKEN // empty' "$_cb_settings" 2>/dev/null || true)"
-          _cb_chat="$(jq -r '.allowFrom[0] // empty' "$_cb_access" 2>/dev/null || true)"
-          [ -n "$_cb_token" ] && [ -n "$_cb_chat" ] || exit 0
-          _cb_text="⚠️ Worker is crash-looping: $FASTDEATH_STREAK restarts in a row, each dying within ~${FASTDEATH_THRESHOLD_SECONDS}s. Likely out of quota (weekly cap) or a persistent fault. Backing off to ${backoff}s between retries and will keep trying; it AUTO-RECOVERS the moment the cause clears (quota reset / fault gone). This is NOT the usual cooking ping."
-          printf 'url=%s\n' "https://api.telegram.org/bot${_cb_token}/sendMessage" \
-            | curl -s -o /dev/null --max-time 10 \
-                --data-urlencode "chat_id=${_cb_chat}" \
-                --data-urlencode "text=${_cb_text}" \
-                -K - 2>/dev/null || true
-        ) || true
-      else
-        log "crash-loop alarm: jq/curl missing, degraded alert skipped (backoff still engaged)"
-      fi
+      tg_send_tokenless "⚠️ Worker is crash-looping: $FASTDEATH_STREAK restarts in a row, each dying within ~${FASTDEATH_THRESHOLD_SECONDS}s. Likely out of quota (weekly cap) or a persistent fault. Backing off to ${backoff}s between retries and will keep trying; it AUTO-RECOVERS the moment the cause clears (quota reset / fault gone). This is NOT the usual cooking ping." "crash-loop"
     fi
     log "session ended after ${lifetime}s; restarting fresh (fast-death streak $FASTDEATH_STREAK, backoff ${backoff}s)"
     sleep "$backoff"

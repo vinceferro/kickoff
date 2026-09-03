@@ -105,8 +105,17 @@ out="$(KICKOFF_MODEL_DIR="$DUR_A" probe "$MR" 'console.log(JSON.stringify(m.sema
 chk "durable dir with model → available:true"            "printf '%s' \"\$out\" | grep -q '\"available\":true'"
 chk "…and the source is the DURABLE dir (not legacy)"    "printf '%s' \"\$out\" | grep -q '\"source\":\"durable\"'"
 
-out="$(KICKOFF_MODEL_DIR="$FIX/empty-a" probe "$MR" 'console.log(JSON.stringify(m.semanticAvailability()))')"
-chk "durable empty → falls back to the legacy in-node_modules cache (this repo has the real model there)" \
+# The legacy-fallback leg probes a FIXTURE core (stub package + a planted fake legacy cache —
+# the §3 idiom), never this box's ambient node_modules: a clean checkout has NO in-tree model,
+# and the leg must test the FALLBACK MECHANISM, not whatever the running box happens to hold.
+COREL="$FIX/core-legacy-fallback"; fresh_core "$COREL"
+PKGL="$COREL/memory-retrieval/node_modules/@xenova/transformers"
+mkdir -p "$PKGL/src"
+printf '{"name":"@xenova/transformers","main":"./src/transformers.js"}\n' > "$PKGL/package.json"
+printf '// stub\n' > "$PKGL/src/transformers.js"
+fake_model "$PKGL/.cache" "LEGACY-FALLBACK"
+out="$(KICKOFF_MODEL_DIR="$FIX/empty-a" probe "$COREL/memory-retrieval" 'console.log(JSON.stringify(m.semanticAvailability()))')"
+chk "durable empty → falls back to the legacy in-node_modules cache (fixture-planted — hermetic, not this box's ambient files)" \
   "printf '%s' \"\$out\" | grep -q '\"source\":\"legacy\"'"
 
 out="$(probe "$MR" 'console.log(m.modelCacheDir())' )"
@@ -371,7 +380,11 @@ chk "stub hygiene [RED pre-repair]: '--version' probes answer versions + exit 0 
 DURB="$FIX/models-heal"; fake_model "$DURB" "HEAL"
 
 heal_rc=0
-heal_out="$(PATH="$BINB:$PATH" KICKOFF_MODEL_DIR="$DURB" KICKOFF_MODEL_OFFLINE=1 MEMORY_DB="$FIX/no-such.db" \
+# KICKOFF_EMBED_PROBE=0: this leg's stack is FAKE by construction (sentinel-planted
+# package.json, no real sharp), so the functional embed probe cannot pass here — the
+# hermeticity lever, same class as KICKOFF_MODEL_OFFLINE=1. The NEXT leg proves the
+# probe still refuses to bless this fake stack when left on.
+heal_out="$(PATH="$BINB:$PATH" KICKOFF_MODEL_DIR="$DURB" KICKOFF_MODEL_OFFLINE=1 KICKOFF_EMBED_PROBE=0 MEMORY_DB="$FIX/no-such.db" \
   node "$MRB/install-model.mjs" 2>&1)" || heal_rc=$?
 chk "pnpm WAS tried first"                                                     "[ -f \"$FIX/pnpm-was-run\" ]"
 chk "…and after pnpm's NON-ZERO exit, npm WAS tried (the fix: no early bail)"  "[ -f \"$FIX/npm-was-run\" ]"
@@ -379,6 +392,14 @@ chk "…npm's result landed over a CLEAN slate (the stale node_modules sentinel 
   "[ ! -e \"$MRB/node_modules/leftover/sentinel\" ] && [ -f \"$MRB/node_modules/@xenova/transformers/package.json\" ]"
 chk "…install-model reports the npm fallback + heals GREEN (exit 0)" \
   "[ $heal_rc -eq 0 ] && printf '%s' \"\$heal_out\" | grep -q 'deps installed via npm'"
+
+# The embed probe guards the blessing: the SAME fake stack, probe left ON, must now FAIL
+# loudly — a green-resolution-but-dead-runtime stack must never be reported ready. [fix-B]
+probe_rc=0
+probe_out="$(PATH="$BINB:$PATH" KICKOFF_MODEL_DIR="$DURB" KICKOFF_MODEL_OFFLINE=1 MEMORY_DB="$FIX/no-such.db" \
+  node "$MRB/install-model.mjs" 2>&1)" || probe_rc=$?
+chk "embed probe left ON refuses to bless the fake stack (non-zero + names the embed failure + the remedies)" \
+  "[ $probe_rc -ne 0 ] && printf '%s' \"\$probe_out\" | grep -qi 'embed' && printf '%s' \"\$probe_out\" | grep -q 'install-model.mjs' && printf '%s' \"\$probe_out\" | grep -q 'node@22'"
 
 # ══════════════════════════════════════════════════════════════════════════════
 echo

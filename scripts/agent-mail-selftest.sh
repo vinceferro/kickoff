@@ -93,6 +93,29 @@ chk "refuses a nonexistent --file"                      "! send_as send --to rec
 chk "warns when the recipient has no checkout on the box" \
   "send_as send --to typoco --subject x --file '$F/note.md' | grep -q 'typo'"
 
+# ── the checkout probe must find checkouts WHERE THEY LIVE ──────────────────────
+# Every checkout on this box is ~/Projects/<org>, never ~/org. The old probe looked only at
+# ~/<org>, so correctly addressed mail to a real org drew the "nothing will ever read it"
+# warning — a false alarm that trains the reader to ignore the warning that matters. The
+# fixture org's checkout sits under $F/Projects with HOME=$F (the probe resolves HOME per
+# invocation, the same way MAIL_DIR resolves AGENT_MAIL_DIR), and there is deliberately NO
+# $F/herdr-tg — so the OLD probe misfires on exactly the case it exists for.
+mkdir -p "$F/Projects/herdr-tg/.git"
+proj_out="$( ( cd "$F/senderco" && HOME="$F" python3 "$MAIL" send --to herdr-tg --subject "Real org" --file "$F/note.md" ) 2>&1 )"
+chk "★ a REAL org whose checkout lives under ~/Projects gets NO 'nothing will ever read it' warning" \
+  "! grep -q 'nothing will ever read it' <<< \"\$proj_out\""
+chk "…and delivery still happened (the probe governs the warning, never the send)" \
+  "ls '$F/mail/herdr-tg/inbox/'*.md >/dev/null 2>&1"
+
+# An org with a MAILBOX but no checkout anywhere under HOME (legitimately new, or checked out
+# on another box): the ⚠ must downgrade to a plain note — a mailbox that already exists is
+# plausibly polled, so "nothing will ever read it" would be a lie. The FIRST send creates the
+# mailbox; the SECOND must see it and soften.
+( cd "$F/senderco" && HOME="$F" python3 "$MAIL" send --to mailboxonlyco --subject "First" --file "$F/note.md" ) >/dev/null 2>&1
+note_out="$( ( cd "$F/senderco" && HOME="$F" python3 "$MAIL" send --to mailboxonlyco --subject "Second" --file "$F/note.md" ) 2>&1 )"
+chk "an existing mailbox downgrades the no-checkout ⚠ to a plain note" \
+  "grep -q 'note:' <<< \"\$note_out\" && ! grep -q 'nothing will ever read it' <<< \"\$note_out\""
+
 # ── stdin path (how an agent pipes a report it just generated) ───────────────────
 printf 'piped body\n' | send_as send --to receiverco --subject "From stdin" >/dev/null 2>&1
 chk "a piped body is delivered and readable"            "recv_as read 'from-stdin' | grep -q 'piped body'"

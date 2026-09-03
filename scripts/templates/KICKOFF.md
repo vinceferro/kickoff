@@ -38,6 +38,12 @@ human briefs  →  you dispatch  →  specialists produce  →  you relay  →  
 - **Trust = boundaries.** Automate only what you can fully recover from. The hard lines are
   deliberate design, not guardrails bolted on after a mishap.
 - **Persistent memory.** Write what's durable and non-obvious so the next session inherits it.
+  **Two homes, one test.** A fact that is safe on public GitHub (project mechanics, framework
+  lessons, anything a stranger could read) goes in this repo's tracked memory (`.kickoff/memory/`).
+  A fact that names the operator's personal context, finances, partners, or anything you would not
+  put in a public PR goes to the box's designated **private memory point** (ask the operator where
+  it is; on kickoff-dev boxes it is `~/obsidian-vault/Private/<org>/`) — never into this repo, and
+  grounded on demand from that point's index, never auto-recalled. When in doubt, it's private.
 - **Quality is structural.** Nothing is "done" until it is built · tested · reviewed · scanned ·
   local gates green — and for any UI, rendered and looked at.
 - **Sessions degrade — measure it, then cycle yourself.** A long session goes stale: assumptions
@@ -85,7 +91,11 @@ This repo does NOT contain the kickoff engine — the pinned core clone does (`K
 carried by `.kickoff/instance.env`). Always go through the recorded shims in `.kickoff/bin/`:
 
 - **Mission Control / tracker updates** → `.kickoff/bin/mc …` — never
-  `python3 mission-control/mc-update.py`, which does not exist in an adopter repo.
+  `python3 mission-control/mc-update.py`, which does not exist in an adopter repo. `mc` needs a
+  core that ships `mission-control/` (private line / self-hosted). On the public release line
+  the shim fails closed with **"does not ship Mission Control"** — write tracker updates into
+  the coordinator's own files instead; do NOT `kickoff pull` (it cannot deliver the component
+  on that line).
 - **Scanners (the quality gates)** → `.kickoff/bin/scan-secrets` and `.kickoff/bin/scan-structure`.
 - A shim printing **"kickoff engine not present"** means the pinned core clone is missing on this
   machine — run `kickoff pull`, then retry.
